@@ -6,48 +6,44 @@ endobj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
 endobj
 4 0 obj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
 endobj
 5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
-endobj
-6 0 obj
-<< /Length 872 >>
+<< /Length 243 >>
 stream
-36.00 72.00 720.00 480.00 re S
-BT /F1 9 Tf 50.00 526.00 Td (SAMPLE - NOT FOR FILING) Tj ET
-BT /F2 22 Tf 555.00 522.00 Td (Form 1099-MISC) Tj ET
-BT /F2 16 Tf 555.00 496.00 Td (Miscellaneous Information) Tj ET
-36.00 472.00 m 756.00 472.00 l S
-520.00 72.00 m 520.00 552.00 l S
-BT /F2 9 Tf 50.00 450.00 Td (Payer:) Tj ET
-BT /F1 10 Tf 50.00 426.00 Td (Sunrise Properties LLC) Tj ET
-BT /F1 10 Tf 50.00 408.00 Td (Recipient: John A Smith) Tj ET
-BT /F1 10 Tf 50.00 390.00 Td (TIN: XXX-XX-4821) Tj ET
-BT /F1 9 Tf 50.00 502.00 Td (1099_MISC_filled_sample) Tj ET
-540.00 368.00 180.00 52.00 re S
-BT /F2 9 Tf 548.00 404.00 Td (1 Rents) Tj ET
-BT /F1 11 Tf 650.00 378.00 Td (18,000.00) Tj ET
-540.00 316.00 180.00 52.00 re S
-BT /F2 9 Tf 548.00 352.00 Td (3 Other income) Tj ET
-BT /F1 11 Tf 650.00 326.00 Td (250.00) Tj ET
-BT /F2 9 Tf 545.00 92.00 Td (Copy B - For recipient records) Tj ET
+BT
+/F1 12 Tf
+72 742 Td
+14 TL
+(SAMPLE - NOT FOR FILING) Tj
+T*
+(1099_MISC_filled_sample) Tj
+T*
+(Payer: Sunrise Properties LLC) Tj
+T*
+(Recipient: John A Smith) Tj
+T*
+(TIN: XXX-XX-4821) Tj
+T*
+(Rents: $18,000.00) Tj
+T*
+(Other income: $250.00) Tj
+ET
 endstream
 endobj
 xref
-0 7
+0 6
 0000000000 65535 f
 0000000009 00000 n
 0000000058 00000 n
 0000000115 00000 n
-0000000251 00000 n
-0000000321 00000 n
-0000000396 00000 n
+0000000241 00000 n
+0000000311 00000 n
 trailer
-<< /Size 7 /Root 1 0 R >>
+<< /Size 6 /Root 1 0 R >>
 startxref
-1319
+605
 %%EOF
