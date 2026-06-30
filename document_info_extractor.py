@@ -13,6 +13,10 @@ from typing import Any
 SUPPORTED_EXTENSIONS = {".pdf", ".png", ".img", ".jpeg", ".jpg"}
 IMAGE_EXTENSIONS = {".png", ".img", ".jpeg", ".jpg"}
 PDF_EXTENSION = ".pdf"
+OCR_SETUP_HELP = (
+    "Install Python packages with: python -m pip install -r requirements.txt. "
+    "Also install the Tesseract OCR application and ensure the tesseract command is on PATH."
+)
 
 
 @dataclass(frozen=True)
@@ -87,7 +91,7 @@ def extract_text_from_image(path: Path) -> tuple[str, str, list[str]]:
     missing = [name for name in ("PIL", "pytesseract") if not module_available(name)]
     if missing:
         warning = "image OCR requires Pillow and pytesseract; missing: " + ", ".join(missing)
-        return "", "ocr_unavailable", [warning]
+        return "", "ocr_unavailable", [warning, OCR_SETUP_HELP]
 
     from PIL import Image  # type: ignore
     import pytesseract  # type: ignore
@@ -153,16 +157,30 @@ def write_output(infos: list[DocumentInfo], output_path: Path, output_format: st
     output_path.write_text("\n".join(sections), encoding="utf-8")
 
 
+def collect_dependency_status() -> dict[str, bool]:
+    return {
+        "pypdf": module_available("pypdf"),
+        "Pillow": module_available("PIL"),
+        "pytesseract": module_available("pytesseract"),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Extract text from PDF/image documents and save document information.")
-    parser.add_argument("inputs", nargs="+", type=Path, help="Input files: pdf, png, img, jpeg, jpg")
+    parser.add_argument("inputs", nargs="*", type=Path, help="Input files: pdf, png, img, jpeg, jpg")
     parser.add_argument("-o", "--output", type=Path, default=Path("document_info.json"), help="Output info file")
     parser.add_argument("--format", choices=("json", "txt"), default="json", help="Output file format")
+    parser.add_argument("--check-dependencies", action="store_true", help="Print optional PDF/OCR dependency status and exit")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.check_dependencies:
+        print(json.dumps({"dependencies": collect_dependency_status(), "ocr_setup_help": OCR_SETUP_HELP}, indent=2))
+        return 0
+    if not args.inputs:
+        raise SystemExit("No input files provided. Pass documents or use --check-dependencies.")
     infos = [extract_document_info(path) for path in args.inputs]
     write_output(infos, args.output, args.format)
     print(args.output)
