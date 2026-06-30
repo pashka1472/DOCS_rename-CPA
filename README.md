@@ -1,42 +1,33 @@
-# Document information extractor
+# CPA document renamer
 
-Small CLI app that extracts text from documents and creates an information file.
+Small CLI utility for CPA intake documents. It converts a photo/scan/PDF into a PDF file and renames it using tax-form content.
 
-## Supported input formats
+## Supported naming rules
 
-- PDF: `.pdf`
-- Images: `.png`, `.img`, `.jpeg`, `.jpg`
-
-## Output
-
-The app writes one output file with information for each document:
-
-- source path
-- file name
-- file extension
-- parser used
-- extracted text
-- line count
-- character count
-- warnings, for example when OCR dependencies are missing
+- `1099_int_<broker>_<last4>` for Form 1099-INT interest income.
+- `1099_dividends_<broker>_<last4>` for Form 1099-DIV dividend income.
+- `1099_consolidated_<broker>_<last4>` for consolidated brokerage 1099 packages.
+- `1099_NEC_<payer name>` for Form 1099-NEC nonemployee compensation.
+- `1099_misc_<payer name>` for Form 1099-MISC miscellaneous income.
+- `W2_<employer name>` for W-2 wage statements.
+- `K1_<issuer name>` for Schedule K-1 documents.
+- `1098_<lender>` for Form 1098 mortgage interest statements.
 
 ## Usage
 
-Create JSON:
-
 ```bash
-python document_info_extractor.py document.pdf scan.jpg --output document_info.json
+python cpa_doc_renamer.py input.pdf --output-dir renamed
+python cpa_doc_renamer.py scan.jpg --output-dir renamed
 ```
 
-Create plain text:
+For development or when OCR text is already available, pass text directly:
 
 ```bash
-python document_info_extractor.py document.pdf --output document_info.txt --format txt
+python cpa_doc_renamer.py input.pdf --text "Form 1099-INT Fidelity account ending in 3718 Interest Income" --dry-run
 ```
 
 ## Optional dependencies
 
-- `pypdf` improves PDF text extraction.
-- `Pillow` and `pytesseract` enable OCR for image files.
-
-If `pypdf` is unavailable, the app still attempts a basic fallback extraction for simple text PDFs.
+- `pypdf` extracts text from PDFs.
+- `pillow` converts image files to PDF.
+- `pytesseract` performs OCR for images when Tesseract is installed on the machine.
