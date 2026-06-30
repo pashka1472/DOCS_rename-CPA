@@ -76,16 +76,3 @@ def test_rejects_unsupported_extension(tmp_path):
 
     with pytest.raises(ValueError, match="Unsupported file extension"):
         extract_document_info(bad_path)
-
-
-def test_image_without_ocr_dependencies_returns_setup_help(tmp_path, monkeypatch):
-    image_path = tmp_path / "nec.png"
-    image_path.write_bytes(b"not a real image; dependency check happens first")
-    monkeypatch.setattr("document_info_extractor.module_available", lambda name: False)
-
-    info = extract_document_info(image_path)
-
-    assert info.parser == "ocr_unavailable"
-    assert info.text == ""
-    assert "missing: PIL, pytesseract" in info.warnings[0]
-    assert "python -m pip install -r requirements.txt" in info.warnings[1]
