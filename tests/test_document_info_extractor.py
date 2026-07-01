@@ -201,3 +201,38 @@ ACC-947251"""
 def extract_document_info_from_fields_for_test(info):
     from document_info_extractor import build_suggested_file_name
     return build_suggested_file_name(info)
+
+
+def test_payer_name_skips_inline_omb_label_for_1099_nec():
+    text = """PAYER’S name OMB No. 1545-0116
+ABC Consulting LLC
+Form 1099-NEC
+Account number (see instructions) 2nd TIN not. 5 State tax withheld
+INV-2026-00421 Ce eee ee eee"""
+
+    fields = extract_fields(text)
+    info = type("Info", (), {"extracted_fields": fields, "text": text, "file_extension": "png"})()
+
+    assert fields["PAYER’S name"] == "ABC Consulting LLC"
+    assert fields["Form"] == "1099-NEC"
+    assert fields["Account number (see instructions)"] == "INV-2026-00421"
+    assert extract_document_info_from_fields_for_test(info) == "1099_NEC_ABC_Consulting_LLC_0421.png"
+
+
+def test_payer_name_skips_inline_numbered_box_and_trims_business_suffix():
+    text = """PAYER’S name 1 Rents OMB No. 1545-0115
+SAMPLE CAPITAL LLC Mi
+- iscellaneous
+123 Market Street $ 1,250.00 Form 1099-MISC
+8 Substitute payments in lieu of dividends or interest
+Account number (see instructions) 2nd TIN not. 16 State tax withheld 17 State/Payer’s state no. 18 State income
+987654321 UO $ 12.25 NJ - 22-1234567 $ 375.42
+Form 1099-MISC (rev. 12-2026)"""
+
+    fields = extract_fields(text)
+    info = type("Info", (), {"extracted_fields": fields, "text": text, "file_extension": "png"})()
+
+    assert fields["PAYER’S name"] == "SAMPLE CAPITAL LLC"
+    assert fields["Form"] == "1099-MISC"
+    assert fields["Account number (see instructions)"] == "987654321"
+    assert extract_document_info_from_fields_for_test(info) == "1099_MISC_SAMPLE_CAPITAL_LLC_4321.png"

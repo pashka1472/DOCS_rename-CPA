@@ -126,7 +126,8 @@ def looks_like_label(value: str) -> bool:
         r"^(street address|room or suite no\.?|city or town|state or province|country)$",
         r"^(payer.?s tin|recipient.?s tin|recipient.?s name)$",
         r"^form\b",
-        r"^\d+[a-z]?\.\s+",
+        r"^omb\s+no\.?",
+        r"^\d+[a-z]?\.?\s+[a-z]",
     ]
     return any(re.search(pattern, value, re.IGNORECASE) for pattern in label_patterns)
 
@@ -160,7 +161,7 @@ def extract_form_value(text: str) -> str | None:
 
 def clean_account_number_candidate(value: str) -> str | None:
     value = clean_field_value(value)
-    if not value or looks_like_label(value):
+    if not value:
         return None
     if re.search(r"2nd\s+TIN|state\s+tax|state/payer", value, re.IGNORECASE):
         return None
@@ -186,10 +187,28 @@ def extract_account_number(text: str, lines: list[str]) -> str | None:
     return clean_field_value(match.group(0)) if match else None
 
 
+def clean_party_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = clean_field_value(value)
+    business_suffix_match = re.search(
+        r"^(.+?\b(?:LLC|L\.?L\.?C\.?|Inc\.?|Corp\.?|Corporation|Company|Co\.?|LLP|L\.?L\.?P\.?|LP|L\.?P\.?|Bank))\b",
+        value,
+        re.IGNORECASE,
+    )
+    if business_suffix_match:
+        return clean_field_value(business_suffix_match.group(1))
+    return value
+
+
+def extract_payer_name(lines: list[str]) -> str | None:
+    return clean_party_name(next_value_after_label(lines, r"payer[’'`]?s name"))
+
+
 def extract_fields(text: str) -> dict[str, str | None]:
     lines = text.splitlines() if text else []
     return {
-        FIELD_LABELS["payer_name"]: next_value_after_label(lines, r"payer[’'`]?s name"),
+        FIELD_LABELS["payer_name"]: extract_payer_name(lines),
         FIELD_LABELS["form"]: extract_form_value(text),
         FIELD_LABELS["account_number"]: extract_account_number(text, lines),
     }
@@ -229,7 +248,7 @@ def first_available_value(lines: list[str], patterns: list[str]) -> str | None:
 
 def party_name_for_form(form: str | None, fields: dict[str, str | None], text: str) -> str | None:
     lines = text.splitlines() if text else []
-    payer = fields.get(FIELD_LABELS["payer_name"])
+    payer = clean_party_name(fields.get(FIELD_LABELS["payer_name"]))
     if form in {"1099-INT", "1099-DIV", "1099-CONSOLIDATED", "1099-NEC", "1099-MISC"}:
         return payer or first_available_value(lines, [r"broker(?:age)?(?: name)?", r"payer", r"financial institution"])
     if form == "W-2":
