@@ -100,8 +100,12 @@ def extract_text_from_image(path: Path) -> tuple[str, str, list[str]]:
     from PIL import Image  # type: ignore
     import pytesseract  # type: ignore
 
+    from PIL import ImageOps  # type: ignore
+
     with Image.open(path) as image:
-        text = pytesseract.image_to_string(image)
+        prepared = ImageOps.autocontrast(image.convert("L"))
+        prepared = prepared.resize((prepared.width * 2, prepared.height * 2))
+        text = pytesseract.image_to_string(prepared, config="--psm 6")
     return normalize_text(text), "pytesseract", []
 
 
@@ -122,7 +126,7 @@ def looks_like_label(value: str) -> bool:
         r"^(street address|room or suite no\.?|city or town|state or province|country)$",
         r"^(payer.?s tin|recipient.?s tin|recipient.?s name)$",
         r"^form\b",
-        r"^\d+[a-z]?\s+",
+        r"^\d+[a-z]?\.\s+",
     ]
     return any(re.search(pattern, value, re.IGNORECASE) for pattern in label_patterns)
 
@@ -133,7 +137,7 @@ def next_value_after_label(lines: list[str], label_pattern: str) -> str | None:
         if not match:
             continue
         inline_value = clean_field_value(line[match.end():])
-        if inline_value:
+        if inline_value and not looks_like_label(inline_value):
             return inline_value
         for candidate in lines[index + 1:]:
             value = clean_field_value(candidate)
@@ -154,11 +158,31 @@ def extract_form_value(text: str) -> str | None:
     return None
 
 
+def clean_account_number_candidate(value: str) -> str | None:
+    value = clean_field_value(value)
+    if not value or looks_like_label(value):
+        return None
+    if re.search(r"2nd\s+TIN|state\s+tax|state/payer", value, re.IGNORECASE):
+        return None
+    before_amount = re.split(r"\s+\$", value, maxsplit=1)[0]
+    match = re.search(r"\b(?:[A-Z]{2,10}-)?\d[A-Z0-9-]*\d\b", before_amount, re.IGNORECASE)
+    return clean_field_value(match.group(0)) if match else None
+
+
 def extract_account_number(text: str, lines: list[str]) -> str | None:
-    value = next_value_after_label(lines, r"account number(?:\s*\(see instructions\))?")
-    if value:
-        return value
-    match = re.search(r"\b[A-Z]{2,5}-\d{4}-\d{4,}\b", text, re.IGNORECASE)
+    label_pattern = r"account number(?:\s*\(see instructions\))?"
+    for index, line in enumerate(lines):
+        match = re.search(label_pattern, line, re.IGNORECASE)
+        if not match:
+            continue
+        inline_value = clean_account_number_candidate(line[match.end():])
+        if inline_value:
+            return inline_value
+        for candidate in lines[index + 1:]:
+            value = clean_account_number_candidate(candidate)
+            if value:
+                return value
+    match = re.search(r"\b[A-Z]{2,10}-\d{4}-\d{4,}\b", text, re.IGNORECASE)
     return clean_field_value(match.group(0)) if match else None
 
 
@@ -172,17 +196,20 @@ def extract_fields(text: str) -> dict[str, str | None]:
 
 
 def normalize_form(form: str | None, text: str) -> str | None:
+    normalized_form = form.upper().replace("_", "-").replace(" ", "-") if form else None
+    if normalized_form in {"1099-INT", "1099-DIV", "1099-NEC", "1099-MISC", "1098", "W-2", "K-1"}:
+        return normalized_form
     haystack = f"{form or ''}\n{text}".lower()
     if "consolidated" in haystack and "1099" in haystack:
         return "1099-CONSOLIDATED"
+    if re.search(r"1099[-_\s]?misc|miscellaneous", haystack):
+        return "1099-MISC"
+    if re.search(r"1099[-_\s]?nec|nonemployee compensation", haystack):
+        return "1099-NEC"
     if re.search(r"1099[-_\s]?int|interest income", haystack):
         return "1099-INT"
     if re.search(r"1099[-_\s]?div|dividends", haystack):
         return "1099-DIV"
-    if re.search(r"1099[-_\s]?nec|nonemployee compensation", haystack):
-        return "1099-NEC"
-    if re.search(r"1099[-_\s]?misc|miscellaneous", haystack):
-        return "1099-MISC"
     if re.search(r"\bw[-_\s]?2\b|wage and tax statement", haystack):
         return "W-2"
     if re.search(r"\bk[-_\s]?1\b|schedule k-1", haystack):
@@ -224,7 +251,7 @@ def last_four_digits(value: str | None) -> str | None:
 def sanitize_filename_stem(stem: str) -> str:
     for old, new in {"<": "", ">": "", ":": "", '"': "", "/": "-", "\\": "-", "|": "", "?": "", "*": ""}.items():
         stem = stem.replace(old, new)
-    stem = re.sub(r"\s+", " ", stem).strip(" ._")
+    stem = re.sub(r"\s+", "_", stem).strip("._")
     return re.sub(r"_+", "_", stem) or "document"
 
 
@@ -246,7 +273,7 @@ def build_suggested_file_name(info: "DocumentInfo") -> str | None:
     elif form == "1099-NEC" and party:
         stem = append_account_last4(f"1099_NEC_{party}", account_last4)
     elif form == "1099-MISC" and party:
-        stem = append_account_last4(f"1099_misc_{party}", account_last4)
+        stem = append_account_last4(f"1099_MISC_{party}", account_last4)
     elif form == "W-2" and party:
         stem = append_account_last4(f"W2_{party}", account_last4)
     elif form == "K-1" and party:
