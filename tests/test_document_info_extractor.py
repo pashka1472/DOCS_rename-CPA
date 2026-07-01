@@ -137,7 +137,7 @@ def test_json_output_includes_suggested_name_for_supplied_1099_nec(tmp_path):
         "Form": "1099-NEC",
         "Account number (see instructions)": "INV-2026-00421",
     }
-    assert document["suggested_file_name"] == "1099_NEC_ABC Consulting LLC.pdf"
+    assert document["suggested_file_name"] == "1099_NEC_ABC Consulting LLC_0421.pdf"
 
 
 def test_suggests_requested_tax_document_names(tmp_path):
@@ -162,12 +162,12 @@ def test_rename_dir_copies_file_with_suggested_name(tmp_path):
     pdf_path = tmp_path / "nec.pdf"
     output_path = tmp_path / "info.json"
     rename_dir = tmp_path / "renamed"
-    write_simple_pdf(pdf_path, "Form 1099-NEC\nPAYER'S name\nApex Marketing Solutions, Inc.")
+    write_simple_pdf(pdf_path, "Form 1099-NEC\nPAYER'S name\nApex Marketing Solutions, Inc.\nAccount number (see instructions)\nINV-2026-00421")
 
     exit_code = main([str(pdf_path), "--output", str(output_path), "--rename-dir", str(rename_dir)])
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    renamed_path = rename_dir / "1099_NEC_Apex Marketing Solutions, Inc.pdf"
+    renamed_path = rename_dir / "1099_NEC_Apex Marketing Solutions, Inc_0421.pdf"
     assert exit_code == 0
     assert renamed_path.exists()
     assert payload["documents"][0]["suggested_file_name"] == renamed_path.name

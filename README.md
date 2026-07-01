@@ -64,7 +64,7 @@ The JSON output now includes these extracted columns when they are present in OC
 - `Form`
 - `Account number (see instructions)`
 
-The app uses those fields to suggest CPA file names:
+The app uses those fields to suggest CPA file names. When an account number is present, the last four account digits are appended to the end of the file name:
 
 - `1099_int_<broker name>_<last 4 account digits>`
 - `1099_dividends_<broker name>_<last 4 account digits>`
@@ -75,7 +75,7 @@ The app uses those fields to suggest CPA file names:
 - `K1_<issuer or partnership name>`
 - `1098_<lender name>`
 
-For your sample `nec.png`, the output should include `suggested_file_name`: `1099_NEC_ABC Consulting LLC.png`.
+For your sample `nec.png`, the output should include `suggested_file_name`: `1099_NEC_ABC Consulting LLC_0421.png`.
 
 Use `--rename-dir` to copy files into a folder with the suggested names. Original files are not deleted or overwritten.
 

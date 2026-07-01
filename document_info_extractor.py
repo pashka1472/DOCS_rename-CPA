@@ -228,27 +228,31 @@ def sanitize_filename_stem(stem: str) -> str:
     return re.sub(r"_+", "_", stem) or "document"
 
 
+def append_account_last4(stem: str, account_last4: str | None) -> str:
+    return f"{stem}_{account_last4}" if account_last4 else stem
+
+
 def build_suggested_file_name(info: "DocumentInfo") -> str | None:
     form = normalize_form(info.extracted_fields.get(FIELD_LABELS["form"]), info.text)
     party = party_name_for_form(form, info.extracted_fields, info.text)
     account_last4 = last_four_digits(info.extracted_fields.get(FIELD_LABELS["account_number"]))
     suffix = f".{info.file_extension}"
-    if form == "1099-INT" and party and account_last4:
-        stem = f"1099_int_{party}_{account_last4}"
-    elif form == "1099-DIV" and party and account_last4:
-        stem = f"1099_dividends_{party}_{account_last4}"
-    elif form == "1099-CONSOLIDATED" and party and account_last4:
-        stem = f"1099_consolidated_{party}_{account_last4}"
+    if form == "1099-INT" and party:
+        stem = append_account_last4(f"1099_int_{party}", account_last4)
+    elif form == "1099-DIV" and party:
+        stem = append_account_last4(f"1099_dividends_{party}", account_last4)
+    elif form == "1099-CONSOLIDATED" and party:
+        stem = append_account_last4(f"1099_consolidated_{party}", account_last4)
     elif form == "1099-NEC" and party:
-        stem = f"1099_NEC_{party}"
+        stem = append_account_last4(f"1099_NEC_{party}", account_last4)
     elif form == "1099-MISC" and party:
-        stem = f"1099_misc_{party}"
+        stem = append_account_last4(f"1099_misc_{party}", account_last4)
     elif form == "W-2" and party:
-        stem = f"W2_{party}"
+        stem = append_account_last4(f"W2_{party}", account_last4)
     elif form == "K-1" and party:
-        stem = f"K1_{party}"
+        stem = append_account_last4(f"K1_{party}", account_last4)
     elif form == "1098" and party:
-        stem = f"1098_{party}"
+        stem = append_account_last4(f"1098_{party}", account_last4)
     else:
         return None
     return f"{sanitize_filename_stem(stem)}{suffix}"
