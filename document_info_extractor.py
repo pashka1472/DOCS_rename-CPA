@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import re
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,9 @@ class DocumentInfo:
     line_count: int
     character_count: int
     warnings: list[str]
+    extracted_fields: dict[str, str | None]
+    suggested_file_name: str | None
+    renamed_path: str | None = None
 
 
 def module_available(module_name: str) -> bool:
@@ -101,6 +105,174 @@ def extract_text_from_image(path: Path) -> tuple[str, str, list[str]]:
     return normalize_text(text), "pytesseract", []
 
 
+
+FIELD_LABELS = {
+    "payer_name": "PAYER’S name",
+    "form": "Form",
+    "account_number": "Account number (see instructions)",
+}
+
+
+def clean_field_value(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip(" :.-")
+
+
+def looks_like_label(value: str) -> bool:
+    label_patterns = [
+        r"^(street address|room or suite no\.?|city or town|state or province|country)$",
+        r"^(payer.?s tin|recipient.?s tin|recipient.?s name)$",
+        r"^form\b",
+        r"^\d+[a-z]?\s+",
+    ]
+    return any(re.search(pattern, value, re.IGNORECASE) for pattern in label_patterns)
+
+
+def next_value_after_label(lines: list[str], label_pattern: str) -> str | None:
+    for index, line in enumerate(lines):
+        match = re.search(label_pattern, line, re.IGNORECASE)
+        if not match:
+            continue
+        inline_value = clean_field_value(line[match.end():])
+        if inline_value:
+            return inline_value
+        for candidate in lines[index + 1:]:
+            value = clean_field_value(candidate)
+            if value and not looks_like_label(value):
+                return value
+    return None
+
+
+def extract_form_value(text: str) -> str | None:
+    patterns = [
+        r"\bForm\s+([0-9]{4}(?:-[A-Z]+)?|W-?2|K-?1)\b",
+        r"\b(1099[-_\s]?(?:NEC|MISC|INT|DIV)|1098|W-?2|K-?1)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return clean_field_value(match.group(1).replace("_", "-").upper())
+    return None
+
+
+def extract_account_number(text: str, lines: list[str]) -> str | None:
+    value = next_value_after_label(lines, r"account number(?:\s*\(see instructions\))?")
+    if value:
+        return value
+    match = re.search(r"\b[A-Z]{2,5}-\d{4}-\d{4,}\b", text, re.IGNORECASE)
+    return clean_field_value(match.group(0)) if match else None
+
+
+def extract_fields(text: str) -> dict[str, str | None]:
+    lines = text.splitlines() if text else []
+    return {
+        FIELD_LABELS["payer_name"]: next_value_after_label(lines, r"payer[’'`]?s name"),
+        FIELD_LABELS["form"]: extract_form_value(text),
+        FIELD_LABELS["account_number"]: extract_account_number(text, lines),
+    }
+
+
+def normalize_form(form: str | None, text: str) -> str | None:
+    haystack = f"{form or ''}\n{text}".lower()
+    if "consolidated" in haystack and "1099" in haystack:
+        return "1099-CONSOLIDATED"
+    if re.search(r"1099[-_\s]?int|interest income", haystack):
+        return "1099-INT"
+    if re.search(r"1099[-_\s]?div|dividends", haystack):
+        return "1099-DIV"
+    if re.search(r"1099[-_\s]?nec|nonemployee compensation", haystack):
+        return "1099-NEC"
+    if re.search(r"1099[-_\s]?misc|miscellaneous", haystack):
+        return "1099-MISC"
+    if re.search(r"\bw[-_\s]?2\b|wage and tax statement", haystack):
+        return "W-2"
+    if re.search(r"\bk[-_\s]?1\b|schedule k-1", haystack):
+        return "K-1"
+    if re.search(r"\b1098\b|mortgage interest statement", haystack):
+        return "1098"
+    return form
+
+
+def first_available_value(lines: list[str], patterns: list[str]) -> str | None:
+    for pattern in patterns:
+        value = next_value_after_label(lines, pattern)
+        if value:
+            return value
+    return None
+
+
+def party_name_for_form(form: str | None, fields: dict[str, str | None], text: str) -> str | None:
+    lines = text.splitlines() if text else []
+    payer = fields.get(FIELD_LABELS["payer_name"])
+    if form in {"1099-INT", "1099-DIV", "1099-CONSOLIDATED", "1099-NEC", "1099-MISC"}:
+        return payer or first_available_value(lines, [r"broker(?:age)?(?: name)?", r"payer", r"financial institution"])
+    if form == "W-2":
+        return first_available_value(lines, [r"employer[’'`]?s name", r"employer name"]) or payer
+    if form == "K-1":
+        return first_available_value(lines, [r"partnership[’'`]?s name", r"issuer(?:[’'`]?s)? name", r"entity name"]) or payer
+    if form == "1098":
+        return first_available_value(lines, [r"lender[’'`]?s name", r"recipient[’'`]?s/lender[’'`]?s name", r"lender name"]) or payer
+    return payer
+
+
+def last_four_digits(value: str | None) -> str | None:
+    if not value:
+        return None
+    digits = re.findall(r"\d", value)
+    return "".join(digits[-4:]) if len(digits) >= 4 else None
+
+
+def sanitize_filename_stem(stem: str) -> str:
+    for old, new in {"<": "", ">": "", ":": "", '"': "", "/": "-", "\\": "-", "|": "", "?": "", "*": ""}.items():
+        stem = stem.replace(old, new)
+    stem = re.sub(r"\s+", " ", stem).strip(" ._")
+    return re.sub(r"_+", "_", stem) or "document"
+
+
+def build_suggested_file_name(info: "DocumentInfo") -> str | None:
+    form = normalize_form(info.extracted_fields.get(FIELD_LABELS["form"]), info.text)
+    party = party_name_for_form(form, info.extracted_fields, info.text)
+    account_last4 = last_four_digits(info.extracted_fields.get(FIELD_LABELS["account_number"]))
+    suffix = f".{info.file_extension}"
+    if form == "1099-INT" and party and account_last4:
+        stem = f"1099_int_{party}_{account_last4}"
+    elif form == "1099-DIV" and party and account_last4:
+        stem = f"1099_dividends_{party}_{account_last4}"
+    elif form == "1099-CONSOLIDATED" and party and account_last4:
+        stem = f"1099_consolidated_{party}_{account_last4}"
+    elif form == "1099-NEC" and party:
+        stem = f"1099_NEC_{party}"
+    elif form == "1099-MISC" and party:
+        stem = f"1099_misc_{party}"
+    elif form == "W-2" and party:
+        stem = f"W2_{party}"
+    elif form == "K-1" and party:
+        stem = f"K1_{party}"
+    elif form == "1098" and party:
+        stem = f"1098_{party}"
+    else:
+        return None
+    return f"{sanitize_filename_stem(stem)}{suffix}"
+
+
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for number in range(1, 10_000):
+        candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"Could not create a unique file name for {path}")
+
+
+def copy_with_suggested_name(info: DocumentInfo, output_dir: Path) -> DocumentInfo:
+    if not info.suggested_file_name:
+        return info
+    output_dir.mkdir(parents=True, exist_ok=True)
+    destination = unique_path(output_dir / info.suggested_file_name)
+    shutil.copy2(info.source_path, destination)
+    return DocumentInfo(**{**asdict(info), "renamed_path": str(destination)})
+
+
 def extract_document_info(path: Path) -> DocumentInfo:
     resolved = path.expanduser().resolve()
     extension = resolved.suffix.lower()
@@ -118,7 +290,7 @@ def extract_document_info(path: Path) -> DocumentInfo:
         text, parser, warnings = extract_text_from_image(resolved)
 
     lines = text.splitlines() if text else []
-    return DocumentInfo(
+    info = DocumentInfo(
         source_path=str(resolved),
         file_name=resolved.name,
         file_extension=extension.lstrip("."),
@@ -127,7 +299,10 @@ def extract_document_info(path: Path) -> DocumentInfo:
         line_count=len(lines),
         character_count=len(text),
         warnings=warnings,
+        extracted_fields=extract_fields(text),
+        suggested_file_name=None,
     )
+    return DocumentInfo(**{**asdict(info), "suggested_file_name": build_suggested_file_name(info)})
 
 
 def info_to_text(info: DocumentInfo) -> str:
@@ -139,7 +314,13 @@ def info_to_text(info: DocumentInfo) -> str:
         f"Parser: {info.parser}\n"
         f"Lines: {info.line_count}\n"
         f"Characters: {info.character_count}\n"
-        f"Warnings:\n{warnings}\n\n"
+        f"Warnings:\n{warnings}\n"
+        f"Suggested file name: {info.suggested_file_name or ''}\n"
+        f"Renamed path: {info.renamed_path or ''}\n\n"
+        f"Columns:\n"
+        f"PAYER’S name: {info.extracted_fields.get('PAYER’S name') or ''}\n"
+        f"Form: {info.extracted_fields.get('Form') or ''}\n"
+        f"Account number (see instructions): {info.extracted_fields.get('Account number (see instructions)') or ''}\n\n"
         f"Extracted text:\n{info.text}\n"
     )
 
@@ -171,6 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", type=Path, default=Path("document_info.json"), help="Output info file")
     parser.add_argument("--format", choices=("json", "txt"), default="json", help="Output file format")
     parser.add_argument("--check-dependencies", action="store_true", help="Print optional PDF/OCR dependency status and exit")
+    parser.add_argument("--rename-dir", type=Path, help="Copy files into this directory using suggested tax document names")
     return parser
 
 
@@ -182,6 +364,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.inputs:
         raise SystemExit("No input files provided. Pass documents or use --check-dependencies.")
     infos = [extract_document_info(path) for path in args.inputs]
+    if args.rename_dir:
+        infos = [copy_with_suggested_name(info, args.rename_dir) for info in infos]
     write_output(infos, args.output, args.format)
     print(args.output)
     return 0

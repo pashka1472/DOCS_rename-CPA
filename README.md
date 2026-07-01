@@ -19,6 +19,9 @@ The app writes one output file with information for each document:
 - line count
 - character count
 - warnings, for example when OCR dependencies are missing
+- extracted columns: `PAYER’S name`, `Form`, `Account number (see instructions)`
+- `suggested_file_name` for CPA naming
+- `renamed_path` when `--rename-dir` is used
 
 ## Install dependencies
 
@@ -53,6 +56,29 @@ Update the repository or confirm the file contains `inputs` with `nargs="*"`, th
 python document_info_extractor.py --check-dependencies
 ```
 
+## Extracted columns and rename logic
+
+The JSON output now includes these extracted columns when they are present in OCR/PDF text:
+
+- `PAYER’S name`
+- `Form`
+- `Account number (see instructions)`
+
+The app uses those fields to suggest CPA file names:
+
+- `1099_int_<broker name>_<last 4 account digits>`
+- `1099_dividends_<broker name>_<last 4 account digits>`
+- `1099_consolidated_<broker name>_<last 4 account digits>`
+- `1099_NEC_<PAYER’S name>`
+- `1099_misc_<PAYER’S name>`
+- `W2_<employer name>`
+- `K1_<issuer or partnership name>`
+- `1098_<lender name>`
+
+For your sample `nec.png`, the output should include `suggested_file_name`: `1099_NEC_ABC Consulting LLC.png`.
+
+Use `--rename-dir` to copy files into a folder with the suggested names. Original files are not deleted or overwritten.
+
 ## Usage
 
 Create JSON:
@@ -65,6 +91,12 @@ Create plain text:
 
 ```bash
 python document_info_extractor.py document.pdf --output document_info.txt --format txt
+```
+
+Create JSON and copy renamed files:
+
+```bash
+python document_info_extractor.py test_files/nec.png --output document_info.json --rename-dir renamed_documents
 ```
 
 ## Optional dependency behavior
