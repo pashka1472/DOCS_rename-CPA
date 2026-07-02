@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from document_info_extractor import extract_document_info, extract_fields, extract_line_ordered_ocr_text, main, payer_block_fields, write_output
+from document_info_extractor import account_block_fields, extract_document_info, extract_fields, extract_line_ordered_ocr_text, form_block_fields, main, payer_block_fields, write_output
 
 
 def write_simple_pdf(path, text):
@@ -348,3 +348,22 @@ Newark, NJ 07102
         "PAYER address": "123 Main St\nNewark, NJ 07102",
         "PAYER phone": "(555) 123-4567",
     }
+
+
+def test_form_block_fields_extracts_form_from_cropped_block():
+    block_text = """OMB No. 1545-0112
+Form 1099-INT
+(Rev. January 2024)
+For calendar year
+2025
+"""
+
+    assert form_block_fields(block_text) == {"Form": "1099-INT"}
+
+
+def test_account_block_fields_extracts_account_from_cropped_block():
+    block_text = """Account number (see instructions)
+ACC-482915
+"""
+
+    assert account_block_fields(block_text) == {"Account number (see instructions)": "ACC-482915"}

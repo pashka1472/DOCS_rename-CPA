@@ -524,14 +524,26 @@ def grouped_ocr_lines(words: list[OCRWord]) -> list[tuple[str, tuple[int, int, i
     return sorted(lines, key=lambda line: (line[1][1], line[1][0]))
 
 
-def find_payer_anchor_bbox(words: list[OCRWord]) -> tuple[int, int, int, int] | None:
+def find_text_anchor_bbox(words: list[OCRWord], predicate: Any) -> tuple[int, int, int, int] | None:
     best: tuple[str, tuple[int, int, int, int]] | None = None
     for line in grouped_ocr_lines(words):
         text, bbox = line
-        if has_payer_name_anchor(text):
+        if predicate(text):
             if best is None or (bbox[1], bbox[0]) < (best[1][1], best[1][0]):
                 best = line
     return best[1] if best else None
+
+
+def find_payer_anchor_bbox(words: list[OCRWord]) -> tuple[int, int, int, int] | None:
+    return find_text_anchor_bbox(words, has_payer_name_anchor)
+
+
+def has_account_number_anchor(value: str) -> bool:
+    return bool(re.search(r"account\s+number(?:\s*\(see instructions\))?", value, re.IGNORECASE))
+
+
+def has_form_anchor(value: str) -> bool:
+    return bool(re.search(r"\bform\s+(?:1099[-_\s]?(?:NEC|MISC|INT|DIV)|1098|W[-_\s]?2|K[-_\s]?1)\b", value, re.IGNORECASE))
 
 
 def dark_pixel(value: int) -> bool:
@@ -576,10 +588,7 @@ def find_vertical_boundaries(image: Any, anchor_bbox: tuple[int, int, int, int],
     return left, right
 
 
-def crop_payer_block_image(prepared_image: Any, words: list[OCRWord]) -> Any | None:
-    anchor_bbox = find_payer_anchor_bbox(words)
-    if not anchor_bbox:
-        return None
+def crop_anchored_block_image(prepared_image: Any, words: list[OCRWord], anchor_bbox: tuple[int, int, int, int]) -> Any:
     _, top, _, bottom = anchor_bbox
     estimated_right = min(prepared_image.size[0], max(word.right for word in words if word.top >= top) + 10)
     block_bottom = find_horizontal_boundary(prepared_image, bottom, 0, estimated_right)
@@ -591,6 +600,13 @@ def crop_payer_block_image(prepared_image: Any, words: list[OCRWord]) -> Any | N
         min(prepared_image.size[0], block_right - padding),
         min(prepared_image.size[1], block_bottom),
     ))
+
+
+def crop_payer_block_image(prepared_image: Any, words: list[OCRWord]) -> Any | None:
+    anchor_bbox = find_payer_anchor_bbox(words)
+    if not anchor_bbox:
+        return None
+    return crop_anchored_block_image(prepared_image, words, anchor_bbox)
 
 
 def payer_block_content_lines(block_text: str) -> list[str]:
@@ -607,7 +623,24 @@ def payer_block_content_lines(block_text: str) -> list[str]:
     return result
 
 
-def extract_payer_block_text_from_image(path: Path) -> str | None:
+def extract_anchored_block_text(
+    prepared_image: Any,
+    words: list[OCRWord],
+    pytesseract_module: Any,
+    predicate: Any,
+    fallback_psm: int = 6,
+) -> str | None:
+    anchor_bbox = find_text_anchor_bbox(words, predicate)
+    if anchor_bbox is None:
+        return None
+    crop = crop_anchored_block_image(prepared_image, words, anchor_bbox)
+    text = extract_line_ordered_ocr_text(crop, pytesseract_module)
+    if not text:
+        text = pytesseract_module.image_to_string(crop, config=f"--oem 3 --psm {fallback_psm}")
+    return normalize_text(text)
+
+
+def extract_anchored_block_text_from_image(path: Path, predicate: Any, fallback_psm: int = 6) -> str | None:
     if not all(module_available(name) for name in ("PIL", "pytesseract")):
         return None
     from PIL import Image  # type: ignore
@@ -618,13 +651,11 @@ def extract_payer_block_text_from_image(path: Path) -> str | None:
         prepared = ImageOps.autocontrast(image.convert("L"))
         prepared = prepared.resize((prepared.width * 2, prepared.height * 2))
         words = ocr_words_from_image(prepared, pytesseract)
-        crop = crop_payer_block_image(prepared, words)
-        if crop is None:
-            return None
-        text = extract_line_ordered_ocr_text(crop, pytesseract)
-        if not text:
-            text = pytesseract.image_to_string(crop, config="--oem 3 --psm 6")
-    return normalize_text(text)
+        return extract_anchored_block_text(prepared, words, pytesseract, predicate, fallback_psm)
+
+
+def extract_payer_block_text_from_image(path: Path) -> str | None:
+    return extract_anchored_block_text_from_image(path, has_payer_name_anchor)
 
 
 def payer_block_fields(block_text: str | None) -> dict[str, str | None]:
@@ -639,7 +670,46 @@ def payer_block_fields(block_text: str | None) -> dict[str, str | None]:
     }
 
 
-def merge_preferred_fields(base_fields: dict[str, str | None], preferred_fields: dict[str, str | None]) -> dict[str, str | None]:
+def form_block_fields(block_text: str | None) -> dict[str, str | None]:
+    return {FIELD_LABELS["form"]: extract_form_value(block_text or "")}
+
+
+def account_block_fields(block_text: str | None) -> dict[str, str | None]:
+    text = block_text or ""
+    return {FIELD_LABELS["account_number"]: extract_account_number(text, text.splitlines())}
+
+
+def extract_image_block_fields(path: Path) -> dict[str, str | None]:
+    if not all(module_available(name) for name in ("PIL", "pytesseract")):
+        return {}
+    from PIL import Image  # type: ignore
+    import pytesseract  # type: ignore
+    from PIL import ImageOps  # type: ignore
+
+    with Image.open(path) as image:
+        prepared = ImageOps.autocontrast(image.convert("L"))
+        prepared = prepared.resize((prepared.width * 2, prepared.height * 2))
+        words = ocr_words_from_image(prepared, pytesseract)
+        fields = payer_block_fields(extract_anchored_block_text(
+            prepared, words, pytesseract, has_payer_name_anchor,
+        ))
+        fields = merge_preferred_fields(
+            fields,
+            form_block_fields(extract_anchored_block_text(prepared, words, pytesseract, has_form_anchor)),
+        )
+        fields = merge_preferred_fields(
+            fields,
+            account_block_fields(extract_anchored_block_text(
+                prepared, words, pytesseract, has_account_number_anchor,
+            )),
+        )
+    return fields
+
+
+def merge_preferred_fields(
+    base_fields: dict[str, str | None],
+    preferred_fields: dict[str, str | None],
+) -> dict[str, str | None]:
     merged = dict(base_fields)
     for key, value in preferred_fields.items():
         if value:
@@ -666,7 +736,7 @@ def extract_document_info(path: Path) -> DocumentInfo:
     lines = text.splitlines() if text else []
     fields = extract_fields(text)
     if extension in IMAGE_EXTENSIONS:
-        fields = merge_preferred_fields(fields, payer_block_fields(extract_payer_block_text_from_image(resolved)))
+        fields = merge_preferred_fields(fields, extract_image_block_fields(resolved))
     info = DocumentInfo(
         source_path=str(resolved),
         file_name=resolved.name,
