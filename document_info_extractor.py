@@ -132,6 +132,82 @@ def looks_like_label(value: str) -> bool:
     return any(re.search(pattern, value, re.IGNORECASE) for pattern in label_patterns)
 
 
+def canonical_ocr_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower().replace("’", "'")).strip()
+
+
+def fuzzy_ratio(left: str, right: str) -> float:
+    from difflib import SequenceMatcher
+
+    return SequenceMatcher(None, canonical_ocr_text(left), canonical_ocr_text(right)).ratio()
+
+
+def has_payer_name_anchor(value: str) -> bool:
+    canonical = canonical_ocr_text(value)
+    if re.search(r"\bpayer s name\b|\bpayers name\b|\bpayer name\b", canonical):
+        return True
+    variants = ["PAYER'S name", "PAYERS name", "PAYER name", "PAYER’S name"]
+    words = canonical.split()
+    windows = [" ".join(words[index:index + 3]) for index in range(max(len(words) - 1, 1))]
+    return any(fuzzy_ratio(window, variant) >= 0.86 for window in windows for variant in variants)
+
+
+def split_payer_anchor_line(line: str) -> tuple[str | None, str]:
+    patterns = [
+        r"(?:payer[’'`]s|payers|payer)\s+name\s*,?\s*street\s+address\s*,?\s*city\s+or\s+town.*",
+        r"payer[’'`]s\s+name",
+        r"payers\s+name",
+        r"payer\s+name",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, line, re.IGNORECASE)
+        if match:
+            return match.group(0), line[match.end():]
+    return (line, "") if has_payer_name_anchor(line) else (None, line)
+
+
+def strip_neighbor_fields(value: str) -> str:
+    neighbor_pattern = (
+        r"\b(?:payer[’'`]?s?\s+tin|recipient[’'`]?s?\s+tin|recipient[’'`]?s?\s+name|"
+        r"account\s+number|form\s+1099|omb\s+no\.?|\d+[a-z]?\.?\s+[a-z])\b"
+    )
+    return re.split(neighbor_pattern, value, maxsplit=1, flags=re.IGNORECASE)[0]
+
+
+def line_is_neighbor_field(value: str) -> bool:
+    value = clean_field_value(value)
+    if not value:
+        return False
+    return bool(re.search(
+        r"^(?:payer[’'`]?s?\s+tin|recipient[’'`]?s?\s+tin|recipient[’'`]?s?\s+name|"
+        r"account\s+number|form\s+1099|omb\s+no\.?|\d+[a-z]?\.?\s+[a-z])\b",
+        value,
+        re.IGNORECASE,
+    ))
+
+
+def meaningful_payer_block_lines(lines: list[str]) -> list[str]:
+    for index, line in enumerate(lines):
+        anchor, remainder = split_payer_anchor_line(line)
+        if not anchor:
+            continue
+        candidates = [remainder, *lines[index + 1:]]
+        block_lines: list[str] = []
+        for candidate in candidates:
+            candidate = clean_field_value(strip_neighbor_fields(candidate))
+            if not candidate:
+                continue
+            if has_payer_name_anchor(candidate):
+                continue
+            if line_is_neighbor_field(candidate):
+                break
+            if looks_like_label(candidate):
+                continue
+            block_lines.append(candidate)
+        return block_lines
+    return []
+
+
 def next_value_after_label(lines: list[str], label_pattern: str) -> str | None:
     for index, line in enumerate(lines):
         match = re.search(label_pattern, line, re.IGNORECASE)
@@ -202,6 +278,9 @@ def clean_party_name(value: str | None) -> str | None:
 
 
 def extract_payer_name(lines: list[str]) -> str | None:
+    block_lines = meaningful_payer_block_lines(lines)
+    if block_lines:
+        return clean_party_name(block_lines[0])
     return clean_party_name(next_value_after_label(lines, r"payer[’'`]?s name"))
 
 
