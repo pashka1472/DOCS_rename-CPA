@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from document_info_extractor import extract_document_info, extract_fields, main, write_output
+from document_info_extractor import account_block_fields, copy_as_pdf_with_suggested_name, extract_document_info, extract_fields, extract_line_ordered_ocr_text, form_block_fields, k1_form_block_fields, lender_block_fields, main, partnership_block_fields, partnership_ein_block_fields, payer_block_fields, suggested_name_with_extension, write_output
 
 
 def write_simple_pdf(path, text):
@@ -134,6 +134,14 @@ def test_json_output_includes_suggested_name_for_supplied_1099_nec(tmp_path):
     document = json.loads(output_path.read_text(encoding="utf-8"))["documents"][0]
     assert document["extracted_fields"] == {
         "PAYER’S name": "ABC Consulting LLC",
+        "PAYER address": None,
+        "PAYER phone": None,
+        "RECIPIENT’S/LENDER’S name": None,
+        "RECIPIENT/LENDER address": None,
+        "RECIPIENT/LENDER phone": None,
+        "Partnership’s employer identification number": None,
+        "Partnership’s name": None,
+        "Partnership address": None,
         "Form": "1099-NEC",
         "Account number (see instructions)": "INV-2026-00421",
     }
@@ -157,6 +165,29 @@ def test_suggests_requested_tax_document_names(tmp_path):
         write_simple_pdf(pdf_path, text)
         assert extract_document_info(pdf_path).suggested_file_name == expected
 
+
+
+def test_suggested_name_with_extension_forces_pdf(tmp_path):
+    pdf_path = tmp_path / "nec.pdf"
+    write_simple_pdf(pdf_path, "Form 1099-NEC\nPAYER'S name\nABC Consulting LLC")
+    info = extract_document_info(pdf_path)
+
+    assert suggested_name_with_extension(info, ".pdf") == "1099_NEC_ABC_Consulting_LLC.pdf"
+
+
+def test_copy_as_pdf_with_suggested_name_copies_pdf_to_pdf_name(tmp_path):
+    pdf_path = tmp_path / "nec.pdf"
+    output_dir = tmp_path / "renamed"
+    write_simple_pdf(pdf_path, "Form 1099-NEC\nPAYER'S name\nABC Consulting LLC")
+    info = extract_document_info(pdf_path)
+
+    copied = copy_as_pdf_with_suggested_name(info, output_dir)
+
+    destination = output_dir / "1099_NEC_ABC_Consulting_LLC.pdf"
+    assert destination.exists()
+    assert copied.suggested_file_name == destination.name
+    assert copied.renamed_path == str(destination)
+    assert destination.read_bytes() == pdf_path.read_bytes()
 
 def test_rename_dir_copies_file_with_suggested_name(tmp_path):
     pdf_path = tmp_path / "nec.pdf"
@@ -236,3 +267,194 @@ Form 1099-MISC (rev. 12-2026)"""
     assert fields["Form"] == "1099-MISC"
     assert fields["Account number (see instructions)"] == "987654321"
     assert extract_document_info_from_fields_for_test(info) == "1099_MISC_SAMPLE_CAPITAL_LLC_4321.png"
+
+
+def test_1099_div_payer_name_uses_standard_anchor_and_skips_address_block():
+    text = """Form 1099-DIV
+PAYER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.
+SAMPLE CAPITAL LLC
+123 Market Street, Suite 1000
+New York, NY 10001
+(212) 555-7890
+PAYER'S TIN RECIPIENT'S TIN
+12-3456789 987-65-4321
+Account number (see instructions)
+DIV-2026-12345678
+"""
+
+    fields = extract_fields(text)
+
+    assert fields["PAYER’S name"] == "SAMPLE CAPITAL LLC"
+    assert fields["Form"] == "1099-DIV"
+    assert fields["Account number (see instructions)"] == "DIV-2026-12345678"
+
+
+def test_1099_div_payer_name_accepts_ocr_anchor_variants_and_inline_neighbor_field():
+    text = """Form 1099-DIV
+PAYERS name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.
+Charles Schwab PAYER'S TIN 12-3456789
+Recipient's name Jane Investor
+Account number (see instructions) 00001234
+"""
+
+    fields = extract_fields(text)
+
+    assert fields["PAYER’S name"] == "Charles Schwab"
+
+
+def test_1099_int_payer_name_skips_wrapped_standard_anchor_description():
+    text = """Form 1099-INT
+PAYER'S name, street address, city or town, state or province, country, ZIP
+or foreign postal code, and telephone no.
+SAMPLE BANK LLC
+100 Banking Plaza
+Chicago, IL 60601
+PAYER'S TIN RECIPIENT'S TIN
+12-3456789 987-65-4321
+Account number (see instructions)
+ACC-482915
+"""
+
+    fields = extract_fields(text)
+
+    assert fields["PAYER’S name"] == "SAMPLE BANK LLC"
+    assert fields["Form"] == "1099-INT"
+    assert fields["Account number (see instructions)"] == "ACC-482915"
+
+
+
+def test_line_ordered_ocr_text_preserves_rows_from_tesseract_data():
+    class FakeOutput:
+        DICT = "dict"
+
+    class FakePytesseract:
+        Output = FakeOutput
+
+        @staticmethod
+        def image_to_data(image, config, output_type):
+            assert image == "prepared-image"
+            assert config == "--oem 3 --psm 11"
+            assert output_type == "dict"
+            return {
+                "page_num": [1, 1, 1, 1, 1],
+                "block_num": [1, 1, 1, 2, 2],
+                "par_num": [1, 1, 1, 1, 1],
+                "line_num": [1, 1, 2, 1, 1],
+                "left": [100, 10, 10, 5, 40],
+                "top": [10, 10, 30, 80, 80],
+                "conf": ["94", "96", "91", "88", "87"],
+                "text": ["BANK", "SAMPLE", "LLC", "ACC-", "482915"],
+            }
+
+    assert extract_line_ordered_ocr_text("prepared-image", FakePytesseract) == "SAMPLE BANK\nLLC\nACC- 482915"
+
+
+def test_json_output_keeps_extracted_text_as_multiline_string(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    output_path = tmp_path / "info.json"
+    write_simple_pdf(pdf_path, "Line one\nLine two\nLine three")
+    info = extract_document_info(pdf_path)
+
+    write_output([info], output_path, "json")
+
+    document = json.loads(output_path.read_text(encoding="utf-8"))["documents"][0]
+    assert document["text"] == "Line one\nLine two\nLine three"
+    assert document["text_lines"] == ["Line one", "Line two", "Line three"]
+    assert document["line_count"] == 3
+
+
+def test_payer_block_fields_returns_name_address_and_phone_from_cropped_block():
+    block_text = """PAYER'S name, street address, city or town, state or province, country, ZIP
+or foreign postal code, and telephone no.
+SAMPLE BANK LLC
+123 Main St
+Newark, NJ 07102
+(555) 123-4567
+"""
+
+    assert payer_block_fields(block_text) == {
+        "PAYER’S name": "SAMPLE BANK LLC",
+        "PAYER address": "123 Main St\nNewark, NJ 07102",
+        "PAYER phone": "(555) 123-4567",
+    }
+
+
+def test_form_block_fields_extracts_form_from_cropped_block():
+    block_text = """OMB No. 1545-0112
+Form 1099-INT
+(Rev. January 2024)
+For calendar year
+2025
+"""
+
+    assert form_block_fields(block_text) == {"Form": "1099-INT"}
+
+
+def test_account_block_fields_extracts_account_from_cropped_block():
+    block_text = """Account number (see instructions)
+ACC-482915
+"""
+
+    assert account_block_fields(block_text) == {"Account number (see instructions)": "ACC-482915"}
+
+
+def test_lender_block_fields_returns_name_address_and_phone_from_1098_block():
+    block_text = """RECIPIENT'S/LENDER'S name, street address, city or town, state or province, country, ZIP
+or foreign postal code, and telephone no.
+SAMPLE MORTGAGE LLC
+500 Loan Ave
+Dallas, TX 75201
+(800) 555-1098
+"""
+
+    assert lender_block_fields(block_text) == {
+        "RECIPIENT’S/LENDER’S name": "SAMPLE MORTGAGE LLC",
+        "RECIPIENT/LENDER address": "500 Loan Ave\nDallas, TX 75201",
+        "RECIPIENT/LENDER phone": "(800) 555-1098",
+    }
+
+
+def test_k1_partnership_ein_block_fields_extracts_ein():
+    block_text = """A Partnership's employer identification number
+12-3456789
+"""
+
+    assert partnership_ein_block_fields(block_text) == {"Partnership’s employer identification number": "12-3456789"}
+
+
+def test_k1_partnership_block_fields_extracts_name_and_address():
+    block_text = """B Partnership's name, address, city, state, and ZIP code
+ABC Demo Partners, LLC
+123 Business Park Dr.
+Clifton, NJ 07011
+"""
+
+    assert partnership_block_fields(block_text) == {
+        "Partnership’s name": "ABC Demo Partners, LLC",
+        "Partnership address": "123 Business Park Dr\nClifton, NJ 07011",
+    }
+
+
+def test_k1_form_block_fields_recognizes_schedule_k1_form_1065():
+    block_text = """Schedule K-1
+(Form 1065)
+2025
+"""
+
+    assert k1_form_block_fields(block_text) == {"Form": "K-1"}
+
+
+def test_k1_suggested_name_uses_partnership_name_and_ein_last4():
+    text = """Schedule K-1
+(Form 1065)
+A Partnership's employer identification number
+12-3456789
+B Partnership's name, address, city, state, and ZIP code
+ABC Demo Partners, LLC
+123 Business Park Dr.
+Clifton, NJ 07011
+"""
+    fields = extract_fields(text)
+    info = type("Info", (), {"extracted_fields": fields, "text": text, "file_extension": "png"})()
+
+    assert extract_document_info_from_fields_for_test(info) == "K1_ABC_Demo_Partners,_LLC_6789.png"
