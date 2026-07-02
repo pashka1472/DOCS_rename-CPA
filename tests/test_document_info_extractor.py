@@ -236,3 +236,56 @@ Form 1099-MISC (rev. 12-2026)"""
     assert fields["Form"] == "1099-MISC"
     assert fields["Account number (see instructions)"] == "987654321"
     assert extract_document_info_from_fields_for_test(info) == "1099_MISC_SAMPLE_CAPITAL_LLC_4321.png"
+
+
+def test_1099_div_payer_name_uses_standard_anchor_and_skips_address_block():
+    text = """Form 1099-DIV
+PAYER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.
+SAMPLE CAPITAL LLC
+123 Market Street, Suite 1000
+New York, NY 10001
+(212) 555-7890
+PAYER'S TIN RECIPIENT'S TIN
+12-3456789 987-65-4321
+Account number (see instructions)
+DIV-2026-12345678
+"""
+
+    fields = extract_fields(text)
+
+    assert fields["PAYER’S name"] == "SAMPLE CAPITAL LLC"
+    assert fields["Form"] == "1099-DIV"
+    assert fields["Account number (see instructions)"] == "DIV-2026-12345678"
+
+
+def test_1099_div_payer_name_accepts_ocr_anchor_variants_and_inline_neighbor_field():
+    text = """Form 1099-DIV
+PAYERS name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.
+Charles Schwab PAYER'S TIN 12-3456789
+Recipient's name Jane Investor
+Account number (see instructions) 00001234
+"""
+
+    fields = extract_fields(text)
+
+    assert fields["PAYER’S name"] == "Charles Schwab"
+
+
+def test_1099_int_payer_name_skips_wrapped_standard_anchor_description():
+    text = """Form 1099-INT
+PAYER'S name, street address, city or town, state or province, country, ZIP
+or foreign postal code, and telephone no.
+SAMPLE BANK LLC
+100 Banking Plaza
+Chicago, IL 60601
+PAYER'S TIN RECIPIENT'S TIN
+12-3456789 987-65-4321
+Account number (see instructions)
+ACC-482915
+"""
+
+    fields = extract_fields(text)
+
+    assert fields["PAYER’S name"] == "SAMPLE BANK LLC"
+    assert fields["Form"] == "1099-INT"
+    assert fields["Account number (see instructions)"] == "ACC-482915"
