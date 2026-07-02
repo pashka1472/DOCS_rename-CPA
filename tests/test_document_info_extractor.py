@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from document_info_extractor import extract_document_info, extract_fields, main, write_output
+from document_info_extractor import account_block_fields, extract_document_info, extract_fields, extract_line_ordered_ocr_text, form_block_fields, main, payer_block_fields, write_output
 
 
 def write_simple_pdf(path, text):
@@ -134,6 +134,8 @@ def test_json_output_includes_suggested_name_for_supplied_1099_nec(tmp_path):
     document = json.loads(output_path.read_text(encoding="utf-8"))["documents"][0]
     assert document["extracted_fields"] == {
         "PAYER’S name": "ABC Consulting LLC",
+        "PAYER address": None,
+        "PAYER phone": None,
         "Form": "1099-NEC",
         "Account number (see instructions)": "INV-2026-00421",
     }
@@ -269,3 +271,99 @@ Account number (see instructions) 00001234
     fields = extract_fields(text)
 
     assert fields["PAYER’S name"] == "Charles Schwab"
+
+
+def test_1099_int_payer_name_skips_wrapped_standard_anchor_description():
+    text = """Form 1099-INT
+PAYER'S name, street address, city or town, state or province, country, ZIP
+or foreign postal code, and telephone no.
+SAMPLE BANK LLC
+100 Banking Plaza
+Chicago, IL 60601
+PAYER'S TIN RECIPIENT'S TIN
+12-3456789 987-65-4321
+Account number (see instructions)
+ACC-482915
+"""
+
+    fields = extract_fields(text)
+
+    assert fields["PAYER’S name"] == "SAMPLE BANK LLC"
+    assert fields["Form"] == "1099-INT"
+    assert fields["Account number (see instructions)"] == "ACC-482915"
+
+
+
+def test_line_ordered_ocr_text_preserves_rows_from_tesseract_data():
+    class FakeOutput:
+        DICT = "dict"
+
+    class FakePytesseract:
+        Output = FakeOutput
+
+        @staticmethod
+        def image_to_data(image, config, output_type):
+            assert image == "prepared-image"
+            assert config == "--oem 3 --psm 11"
+            assert output_type == "dict"
+            return {
+                "page_num": [1, 1, 1, 1, 1],
+                "block_num": [1, 1, 1, 2, 2],
+                "par_num": [1, 1, 1, 1, 1],
+                "line_num": [1, 1, 2, 1, 1],
+                "left": [100, 10, 10, 5, 40],
+                "top": [10, 10, 30, 80, 80],
+                "conf": ["94", "96", "91", "88", "87"],
+                "text": ["BANK", "SAMPLE", "LLC", "ACC-", "482915"],
+            }
+
+    assert extract_line_ordered_ocr_text("prepared-image", FakePytesseract) == "SAMPLE BANK\nLLC\nACC- 482915"
+
+
+def test_json_output_keeps_extracted_text_as_multiline_string(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    output_path = tmp_path / "info.json"
+    write_simple_pdf(pdf_path, "Line one\nLine two\nLine three")
+    info = extract_document_info(pdf_path)
+
+    write_output([info], output_path, "json")
+
+    document = json.loads(output_path.read_text(encoding="utf-8"))["documents"][0]
+    assert document["text"] == "Line one\nLine two\nLine three"
+    assert document["text_lines"] == ["Line one", "Line two", "Line three"]
+    assert document["line_count"] == 3
+
+
+def test_payer_block_fields_returns_name_address_and_phone_from_cropped_block():
+    block_text = """PAYER'S name, street address, city or town, state or province, country, ZIP
+or foreign postal code, and telephone no.
+SAMPLE BANK LLC
+123 Main St
+Newark, NJ 07102
+(555) 123-4567
+"""
+
+    assert payer_block_fields(block_text) == {
+        "PAYER’S name": "SAMPLE BANK LLC",
+        "PAYER address": "123 Main St\nNewark, NJ 07102",
+        "PAYER phone": "(555) 123-4567",
+    }
+
+
+def test_form_block_fields_extracts_form_from_cropped_block():
+    block_text = """OMB No. 1545-0112
+Form 1099-INT
+(Rev. January 2024)
+For calendar year
+2025
+"""
+
+    assert form_block_fields(block_text) == {"Form": "1099-INT"}
+
+
+def test_account_block_fields_extracts_account_from_cropped_block():
+    block_text = """Account number (see instructions)
+ACC-482915
+"""
+
+    assert account_block_fields(block_text) == {"Account number (see instructions)": "ACC-482915"}
