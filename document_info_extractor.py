@@ -190,6 +190,12 @@ FIELD_LABELS = {
     "payer_name": "PAYER’S name",
     "payer_address": "PAYER address",
     "payer_phone": "PAYER phone",
+    "lender_name": "RECIPIENT’S/LENDER’S name",
+    "lender_address": "RECIPIENT/LENDER address",
+    "lender_phone": "RECIPIENT/LENDER phone",
+    "partnership_ein": "Partnership’s employer identification number",
+    "partnership_name": "Partnership’s name",
+    "partnership_address": "Partnership address",
     "form": "Form",
     "account_number": "Account number (see instructions)",
 }
@@ -362,6 +368,23 @@ def extract_account_number(text: str, lines: list[str]) -> str | None:
     return clean_field_value(match.group(0)) if match else None
 
 
+def extract_partnership_ein(text: str, lines: list[str]) -> str | None:
+    label_pattern = r"partnership[’'`]?s employer identification number"
+    for index, line in enumerate(lines):
+        match = re.search(label_pattern, line, re.IGNORECASE)
+        if not match:
+            continue
+        inline_value = clean_account_number_candidate(line[match.end():])
+        if inline_value:
+            return inline_value
+        for candidate in lines[index + 1:]:
+            value = clean_account_number_candidate(candidate)
+            if value:
+                return value
+    match = re.search(r"\b\d{2}-\d{7}\b", text)
+    return clean_field_value(match.group(0)) if match else None
+
+
 def clean_party_name(value: str | None) -> str | None:
     if not value:
         return None
@@ -389,6 +412,16 @@ def extract_fields(text: str) -> dict[str, str | None]:
         FIELD_LABELS["payer_name"]: extract_payer_name(lines),
         FIELD_LABELS["payer_address"]: None,
         FIELD_LABELS["payer_phone"]: None,
+        FIELD_LABELS["lender_name"]: first_available_value(lines, [
+            r"recipient[’'`]?s/lender[’'`]?s name",
+            r"recipient[’'`]?s/lender name",
+            r"lender[’'`]?s name",
+            r"lender name",
+        ]),
+        FIELD_LABELS["lender_address"]: None,
+        FIELD_LABELS["lender_phone"]: None,
+        FIELD_LABELS["partnership_ein"]: extract_partnership_ein(text, lines),
+        **partnership_block_fields(text),
         FIELD_LABELS["form"]: extract_form_value(text),
         FIELD_LABELS["account_number"]: extract_account_number(text, lines),
     }
@@ -434,9 +467,11 @@ def party_name_for_form(form: str | None, fields: dict[str, str | None], text: s
     if form == "W-2":
         return first_available_value(lines, [r"employer[’'`]?s name", r"employer name"]) or payer
     if form == "K-1":
-        return first_available_value(lines, [r"partnership[’'`]?s name", r"issuer(?:[’'`]?s)? name", r"entity name"]) or payer
+        partnership = clean_party_name(fields.get(FIELD_LABELS["partnership_name"]))
+        return partnership or first_available_value(lines, [r"partnership[’'`]?s name", r"issuer(?:[’'`]?s)? name", r"entity name"]) or payer
     if form == "1098":
-        return first_available_value(lines, [r"lender[’'`]?s name", r"recipient[’'`]?s/lender[’'`]?s name", r"lender name"]) or payer
+        lender = clean_party_name(fields.get(FIELD_LABELS["lender_name"]))
+        return lender or first_available_value(lines, [r"lender[’'`]?s name", r"recipient[’'`]?s/lender[’'`]?s name", r"recipient[’'`]?s/lender name", r"lender name"]) or payer
     return payer
 
 
@@ -462,6 +497,8 @@ def build_suggested_file_name(info: "DocumentInfo") -> str | None:
     form = normalize_form(info.extracted_fields.get(FIELD_LABELS["form"]), info.text)
     party = party_name_for_form(form, info.extracted_fields, info.text)
     account_last4 = last_four_digits(info.extracted_fields.get(FIELD_LABELS["account_number"]))
+    if form == "K-1" and not account_last4:
+        account_last4 = last_four_digits(info.extracted_fields.get(FIELD_LABELS["partnership_ein"]))
     suffix = f".{info.file_extension}"
     if form == "1099-INT" and party:
         stem = append_account_last4(f"1099_int_{party}", account_last4)
@@ -543,7 +580,40 @@ def has_account_number_anchor(value: str) -> bool:
 
 
 def has_form_anchor(value: str) -> bool:
-    return bool(re.search(r"\bform\s+(?:1099[-_\s]?(?:NEC|MISC|INT|DIV)|1098|W[-_\s]?2|K[-_\s]?1)\b", value, re.IGNORECASE))
+    return bool(re.search(
+        r"\bform\s+(?:1099[-_\s]?(?:NEC|MISC|INT|DIV)|1098|1065|W[-_\s]?2|K[-_\s]?1)\b|\bschedule\s+k[-_\s]?1\b",
+        value,
+        re.IGNORECASE,
+    ))
+
+
+def has_schedule_k1_anchor(value: str) -> bool:
+    return bool(re.search(r"\bschedule\s+k[-_\s]?1\b|\bform\s+1065\b", value, re.IGNORECASE))
+
+
+def has_partnership_ein_anchor(value: str) -> bool:
+    canonical = canonical_ocr_text(value)
+    return "partnership s employer identification number" in canonical or "partnership employer identification number" in canonical
+
+
+def has_partnership_name_anchor(value: str) -> bool:
+    canonical = canonical_ocr_text(value)
+    if "partnership s name" in canonical or "partnership name" in canonical:
+        return True
+    variants = ["Partnership's name", "Partnership’s name", "Partnership name"]
+    words = canonical.split()
+    windows = [" ".join(words[index:index + 3]) for index in range(max(len(words) - 1, 1))]
+    return any(fuzzy_ratio(window, variant) >= 0.86 for window in windows for variant in variants)
+
+
+def has_lender_name_anchor(value: str) -> bool:
+    canonical = canonical_ocr_text(value)
+    if re.search(r"\brecipient s lender s name\b|\brecipient lender name\b|\blender s name\b|\blender name\b", canonical):
+        return True
+    variants = ["RECIPIENT'S/LENDER'S name", "RECIPIENT'S/LENDER name", "LENDER'S name", "LENDER name"]
+    words = canonical.split()
+    windows = [" ".join(words[index:index + 4]) for index in range(max(len(words) - 2, 1))]
+    return any(fuzzy_ratio(window, variant) >= 0.84 for window in windows for variant in variants)
 
 
 def dark_pixel(value: int) -> bool:
@@ -609,18 +679,30 @@ def crop_payer_block_image(prepared_image: Any, words: list[OCRWord]) -> Any | N
     return crop_anchored_block_image(prepared_image, words, anchor_bbox)
 
 
-def payer_block_content_lines(block_text: str) -> list[str]:
+def anchored_name_block_content_lines(block_text: str, anchor_predicate: Any) -> list[str]:
     result = []
     for line in block_text.splitlines():
         value = clean_field_value(strip_neighbor_fields(line))
         if not value:
             continue
-        if has_payer_name_anchor(value) or is_payer_header_fragment(value):
+        if anchor_predicate(value) or is_payer_header_fragment(value):
             continue
         if line_is_neighbor_field(value):
             break
         result.append(value)
     return result
+
+
+def anchored_block_lines_after_anchor(block_text: str, anchor_predicate: Any) -> list[str]:
+    lines = block_text.splitlines()
+    for index, line in enumerate(lines):
+        if anchor_predicate(line):
+            return anchored_name_block_content_lines("\n".join(lines[index:]), anchor_predicate)
+    return []
+
+
+def payer_block_content_lines(block_text: str) -> list[str]:
+    return anchored_name_block_content_lines(block_text, has_payer_name_anchor)
 
 
 def extract_anchored_block_text(
@@ -658,16 +740,38 @@ def extract_payer_block_text_from_image(path: Path) -> str | None:
     return extract_anchored_block_text_from_image(path, has_payer_name_anchor)
 
 
-def payer_block_fields(block_text: str | None) -> dict[str, str | None]:
-    lines = payer_block_content_lines(block_text or "")
+def name_address_phone_fields(
+    lines: list[str],
+    name_label: str,
+    address_label: str,
+    phone_label: str,
+) -> dict[str, str | None]:
     phone_pattern = r"(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}"
     phone = next((line for line in lines if re.search(phone_pattern, line)), None)
     address_lines = [line for line in lines[1:] if line != phone]
     return {
-        FIELD_LABELS["payer_name"]: clean_party_name(lines[0]) if lines else None,
-        FIELD_LABELS["payer_address"]: "\n".join(address_lines) if address_lines else None,
-        FIELD_LABELS["payer_phone"]: phone,
+        name_label: clean_party_name(lines[0]) if lines else None,
+        address_label: "\n".join(address_lines) if address_lines else None,
+        phone_label: phone,
     }
+
+
+def payer_block_fields(block_text: str | None) -> dict[str, str | None]:
+    return name_address_phone_fields(
+        payer_block_content_lines(block_text or ""),
+        FIELD_LABELS["payer_name"],
+        FIELD_LABELS["payer_address"],
+        FIELD_LABELS["payer_phone"],
+    )
+
+
+def lender_block_fields(block_text: str | None) -> dict[str, str | None]:
+    return name_address_phone_fields(
+        anchored_name_block_content_lines(block_text or "", has_lender_name_anchor),
+        FIELD_LABELS["lender_name"],
+        FIELD_LABELS["lender_address"],
+        FIELD_LABELS["lender_phone"],
+    )
 
 
 def form_block_fields(block_text: str | None) -> dict[str, str | None]:
@@ -677,6 +781,25 @@ def form_block_fields(block_text: str | None) -> dict[str, str | None]:
 def account_block_fields(block_text: str | None) -> dict[str, str | None]:
     text = block_text or ""
     return {FIELD_LABELS["account_number"]: extract_account_number(text, text.splitlines())}
+
+
+def k1_form_block_fields(block_text: str | None) -> dict[str, str | None]:
+    if has_schedule_k1_anchor(block_text or ""):
+        return {FIELD_LABELS["form"]: "K-1"}
+    return {FIELD_LABELS["form"]: extract_form_value(block_text or "")}
+
+
+def partnership_ein_block_fields(block_text: str | None) -> dict[str, str | None]:
+    text = block_text or ""
+    return {FIELD_LABELS["partnership_ein"]: extract_partnership_ein(text, text.splitlines())}
+
+
+def partnership_block_fields(block_text: str | None) -> dict[str, str | None]:
+    lines = anchored_block_lines_after_anchor(block_text or "", has_partnership_name_anchor)
+    return {
+        FIELD_LABELS["partnership_name"]: clean_party_name(lines[0]) if lines else None,
+        FIELD_LABELS["partnership_address"]: "\n".join(lines[1:]) if len(lines) > 1 else None,
+    }
 
 
 def extract_image_block_fields(path: Path) -> dict[str, str | None]:
@@ -695,7 +818,24 @@ def extract_image_block_fields(path: Path) -> dict[str, str | None]:
         ))
         fields = merge_preferred_fields(
             fields,
-            form_block_fields(extract_anchored_block_text(prepared, words, pytesseract, has_form_anchor)),
+            lender_block_fields(extract_anchored_block_text(
+                prepared, words, pytesseract, has_lender_name_anchor,
+            )),
+        )
+        form_block_text = extract_anchored_block_text(prepared, words, pytesseract, has_form_anchor)
+        fields = merge_preferred_fields(fields, form_block_fields(form_block_text))
+        fields = merge_preferred_fields(fields, k1_form_block_fields(form_block_text))
+        fields = merge_preferred_fields(
+            fields,
+            partnership_ein_block_fields(extract_anchored_block_text(
+                prepared, words, pytesseract, has_partnership_ein_anchor,
+            )),
+        )
+        fields = merge_preferred_fields(
+            fields,
+            partnership_block_fields(extract_anchored_block_text(
+                prepared, words, pytesseract, has_partnership_name_anchor,
+            )),
         )
         fields = merge_preferred_fields(
             fields,
@@ -769,6 +909,12 @@ def info_to_text(info: DocumentInfo) -> str:
         f"PAYER’S name: {info.extracted_fields.get('PAYER’S name') or ''}\n"
         f"PAYER address: {info.extracted_fields.get('PAYER address') or ''}\n"
         f"PAYER phone: {info.extracted_fields.get('PAYER phone') or ''}\n"
+        f"RECIPIENT’S/LENDER’S name: {info.extracted_fields.get('RECIPIENT’S/LENDER’S name') or ''}\n"
+        f"RECIPIENT/LENDER address: {info.extracted_fields.get('RECIPIENT/LENDER address') or ''}\n"
+        f"RECIPIENT/LENDER phone: {info.extracted_fields.get('RECIPIENT/LENDER phone') or ''}\n"
+        f"Partnership’s employer identification number: {info.extracted_fields.get('Partnership’s employer identification number') or ''}\n"
+        f"Partnership’s name: {info.extracted_fields.get('Partnership’s name') or ''}\n"
+        f"Partnership address: {info.extracted_fields.get('Partnership address') or ''}\n"
         f"Form: {info.extracted_fields.get('Form') or ''}\n"
         f"Account number (see instructions): {info.extracted_fields.get('Account number (see instructions)') or ''}\n\n"
         f"Extracted text:\n{info.text}\n"

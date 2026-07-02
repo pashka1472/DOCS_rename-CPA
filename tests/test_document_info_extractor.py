@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from document_info_extractor import account_block_fields, extract_document_info, extract_fields, extract_line_ordered_ocr_text, form_block_fields, main, payer_block_fields, write_output
+from document_info_extractor import account_block_fields, extract_document_info, extract_fields, extract_line_ordered_ocr_text, form_block_fields, k1_form_block_fields, lender_block_fields, main, partnership_block_fields, partnership_ein_block_fields, payer_block_fields, write_output
 
 
 def write_simple_pdf(path, text):
@@ -136,6 +136,12 @@ def test_json_output_includes_suggested_name_for_supplied_1099_nec(tmp_path):
         "PAYER’S name": "ABC Consulting LLC",
         "PAYER address": None,
         "PAYER phone": None,
+        "RECIPIENT’S/LENDER’S name": None,
+        "RECIPIENT/LENDER address": None,
+        "RECIPIENT/LENDER phone": None,
+        "Partnership’s employer identification number": None,
+        "Partnership’s name": None,
+        "Partnership address": None,
         "Form": "1099-NEC",
         "Account number (see instructions)": "INV-2026-00421",
     }
@@ -367,3 +373,65 @@ ACC-482915
 """
 
     assert account_block_fields(block_text) == {"Account number (see instructions)": "ACC-482915"}
+
+
+def test_lender_block_fields_returns_name_address_and_phone_from_1098_block():
+    block_text = """RECIPIENT'S/LENDER'S name, street address, city or town, state or province, country, ZIP
+or foreign postal code, and telephone no.
+SAMPLE MORTGAGE LLC
+500 Loan Ave
+Dallas, TX 75201
+(800) 555-1098
+"""
+
+    assert lender_block_fields(block_text) == {
+        "RECIPIENT’S/LENDER’S name": "SAMPLE MORTGAGE LLC",
+        "RECIPIENT/LENDER address": "500 Loan Ave\nDallas, TX 75201",
+        "RECIPIENT/LENDER phone": "(800) 555-1098",
+    }
+
+
+def test_k1_partnership_ein_block_fields_extracts_ein():
+    block_text = """A Partnership's employer identification number
+12-3456789
+"""
+
+    assert partnership_ein_block_fields(block_text) == {"Partnership’s employer identification number": "12-3456789"}
+
+
+def test_k1_partnership_block_fields_extracts_name_and_address():
+    block_text = """B Partnership's name, address, city, state, and ZIP code
+ABC Demo Partners, LLC
+123 Business Park Dr.
+Clifton, NJ 07011
+"""
+
+    assert partnership_block_fields(block_text) == {
+        "Partnership’s name": "ABC Demo Partners, LLC",
+        "Partnership address": "123 Business Park Dr\nClifton, NJ 07011",
+    }
+
+
+def test_k1_form_block_fields_recognizes_schedule_k1_form_1065():
+    block_text = """Schedule K-1
+(Form 1065)
+2025
+"""
+
+    assert k1_form_block_fields(block_text) == {"Form": "K-1"}
+
+
+def test_k1_suggested_name_uses_partnership_name_and_ein_last4():
+    text = """Schedule K-1
+(Form 1065)
+A Partnership's employer identification number
+12-3456789
+B Partnership's name, address, city, state, and ZIP code
+ABC Demo Partners, LLC
+123 Business Park Dr.
+Clifton, NJ 07011
+"""
+    fields = extract_fields(text)
+    info = type("Info", (), {"extracted_fields": fields, "text": text, "file_extension": "png"})()
+
+    assert extract_document_info_from_fields_for_test(info) == "K1_ABC_Demo_Partners,_LLC_6789.png"
