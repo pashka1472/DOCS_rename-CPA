@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from document_info_extractor import extract_document_info, extract_fields, main, write_output
+from document_info_extractor import extract_document_info, extract_fields, extract_line_ordered_ocr_text, main, write_output
 
 
 def write_simple_pdf(path, text):
@@ -289,3 +289,44 @@ ACC-482915
     assert fields["PAYER’S name"] == "SAMPLE BANK LLC"
     assert fields["Form"] == "1099-INT"
     assert fields["Account number (see instructions)"] == "ACC-482915"
+
+
+
+def test_line_ordered_ocr_text_preserves_rows_from_tesseract_data():
+    class FakeOutput:
+        DICT = "dict"
+
+    class FakePytesseract:
+        Output = FakeOutput
+
+        @staticmethod
+        def image_to_data(image, config, output_type):
+            assert image == "prepared-image"
+            assert config == "--oem 3 --psm 11"
+            assert output_type == "dict"
+            return {
+                "page_num": [1, 1, 1, 1, 1],
+                "block_num": [1, 1, 1, 2, 2],
+                "par_num": [1, 1, 1, 1, 1],
+                "line_num": [1, 1, 2, 1, 1],
+                "left": [100, 10, 10, 5, 40],
+                "top": [10, 10, 30, 80, 80],
+                "conf": ["94", "96", "91", "88", "87"],
+                "text": ["BANK", "SAMPLE", "LLC", "ACC-", "482915"],
+            }
+
+    assert extract_line_ordered_ocr_text("prepared-image", FakePytesseract) == "SAMPLE BANK\nLLC\nACC- 482915"
+
+
+def test_json_output_keeps_extracted_text_as_multiline_string(tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    output_path = tmp_path / "info.json"
+    write_simple_pdf(pdf_path, "Line one\nLine two\nLine three")
+    info = extract_document_info(pdf_path)
+
+    write_output([info], output_path, "json")
+
+    document = json.loads(output_path.read_text(encoding="utf-8"))["documents"][0]
+    assert document["text"] == "Line one\nLine two\nLine three"
+    assert document["text_lines"] == ["Line one", "Line two", "Line three"]
+    assert document["line_count"] == 3

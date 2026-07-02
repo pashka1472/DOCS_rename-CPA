@@ -27,6 +27,7 @@ class DocumentInfo:
     file_extension: str
     parser: str
     text: str
+    text_lines: list[str]
     line_count: int
     character_count: int
     warnings: list[str]
@@ -78,6 +79,42 @@ def extract_text_from_simple_pdf(path: Path) -> str:
     return normalize_text("\n".join(text_parts))
 
 
+def tesseract_confident_text(value: object) -> bool:
+    try:
+        return float(str(value)) >= 0
+    except ValueError:
+        return False
+
+
+def extract_line_ordered_ocr_text(prepared_image: Any, pytesseract_module: Any) -> str:
+    data = pytesseract_module.image_to_data(
+        prepared_image,
+        config="--oem 3 --psm 11",
+        output_type=pytesseract_module.Output.DICT,
+    )
+    line_words: dict[tuple[int, int, int, int], list[tuple[int, int, str]]] = {}
+    word_count = len(data.get("text", []))
+    for index in range(word_count):
+        word = re.sub(r"[ \t]+", " ", str(data["text"][index])).strip()
+        if not word or not tesseract_confident_text(data.get("conf", ["-1"] * word_count)[index]):
+            continue
+        key = (
+            int(data.get("page_num", [1] * word_count)[index]),
+            int(data.get("block_num", [0] * word_count)[index]),
+            int(data.get("par_num", [0] * word_count)[index]),
+            int(data.get("line_num", [0] * word_count)[index]),
+        )
+        top = int(data.get("top", [0] * word_count)[index])
+        left = int(data.get("left", [index] * word_count)[index])
+        line_words.setdefault(key, []).append((top, left, word))
+
+    lines = []
+    for key, words in sorted(line_words.items(), key=lambda item: (item[0], min(word[0] for word in item[1]))):
+        del key
+        lines.append(" ".join(word for _, _, word in sorted(words)))
+    return "\n".join(lines)
+
+
 def extract_text_from_pdf(path: Path) -> tuple[str, str, list[str]]:
     if module_available("pypdf"):
         from pypdf import PdfReader  # type: ignore
@@ -105,9 +142,10 @@ def extract_text_from_image(path: Path) -> tuple[str, str, list[str]]:
     with Image.open(path) as image:
         prepared = ImageOps.autocontrast(image.convert("L"))
         prepared = prepared.resize((prepared.width * 2, prepared.height * 2))
-        text = pytesseract.image_to_string(prepared, config="--psm 6")
+        text = extract_line_ordered_ocr_text(prepared, pytesseract)
+        if not text:
+            text = pytesseract.image_to_string(prepared, config="--oem 3 --psm 11")
     return normalize_text(text), "pytesseract", []
-
 
 
 FIELD_LABELS = {
@@ -446,6 +484,7 @@ def extract_document_info(path: Path) -> DocumentInfo:
         file_extension=extension.lstrip("."),
         parser=parser,
         text=text,
+        text_lines=lines,
         line_count=len(lines),
         character_count=len(text),
         warnings=warnings,
