@@ -36,6 +36,28 @@ class DocumentInfo:
     renamed_path: str | None = None
 
 
+@dataclass(frozen=True)
+class OCRWord:
+    text: str
+    left: int
+    top: int
+    width: int
+    height: int
+    confidence: float
+    page_num: int
+    block_num: int
+    par_num: int
+    line_num: int
+
+    @property
+    def right(self) -> int:
+        return self.left + self.width
+
+    @property
+    def bottom(self) -> int:
+        return self.top + self.height
+
+
 def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
@@ -86,33 +108,49 @@ def tesseract_confident_text(value: object) -> bool:
         return False
 
 
-def extract_line_ordered_ocr_text(prepared_image: Any, pytesseract_module: Any) -> str:
+def ocr_words_from_image(prepared_image: Any, pytesseract_module: Any) -> list[OCRWord]:
     data = pytesseract_module.image_to_data(
         prepared_image,
         config="--oem 3 --psm 11",
         output_type=pytesseract_module.Output.DICT,
     )
-    line_words: dict[tuple[int, int, int, int], list[tuple[int, int, str]]] = {}
+    words: list[OCRWord] = []
     word_count = len(data.get("text", []))
     for index in range(word_count):
         word = re.sub(r"[ \t]+", " ", str(data["text"][index])).strip()
-        if not word or not tesseract_confident_text(data.get("conf", ["-1"] * word_count)[index]):
+        raw_confidence = data.get("conf", ["-1"] * word_count)[index]
+        if not word or not tesseract_confident_text(raw_confidence):
             continue
-        key = (
-            int(data.get("page_num", [1] * word_count)[index]),
-            int(data.get("block_num", [0] * word_count)[index]),
-            int(data.get("par_num", [0] * word_count)[index]),
-            int(data.get("line_num", [0] * word_count)[index]),
-        )
-        top = int(data.get("top", [0] * word_count)[index])
-        left = int(data.get("left", [index] * word_count)[index])
-        line_words.setdefault(key, []).append((top, left, word))
+        words.append(OCRWord(
+            text=word,
+            left=int(data.get("left", [index] * word_count)[index]),
+            top=int(data.get("top", [0] * word_count)[index]),
+            width=int(data.get("width", [0] * word_count)[index]),
+            height=int(data.get("height", [0] * word_count)[index]),
+            confidence=float(str(raw_confidence)),
+            page_num=int(data.get("page_num", [1] * word_count)[index]),
+            block_num=int(data.get("block_num", [0] * word_count)[index]),
+            par_num=int(data.get("par_num", [0] * word_count)[index]),
+            line_num=int(data.get("line_num", [0] * word_count)[index]),
+        ))
+    return words
+
+
+def ocr_words_to_line_text(words: list[OCRWord]) -> str:
+    line_words: dict[tuple[int, int, int, int], list[OCRWord]] = {}
+    for word in words:
+        key = (word.page_num, word.block_num, word.par_num, word.line_num)
+        line_words.setdefault(key, []).append(word)
 
     lines = []
-    for key, words in sorted(line_words.items(), key=lambda item: (item[0], min(word[0] for word in item[1]))):
+    for key, grouped_words in sorted(line_words.items(), key=lambda item: (item[0], min(word.top for word in item[1]))):
         del key
-        lines.append(" ".join(word for _, _, word in sorted(words)))
+        lines.append(" ".join(word.text for word in sorted(grouped_words, key=lambda word: word.left)))
     return "\n".join(lines)
+
+
+def extract_line_ordered_ocr_text(prepared_image: Any, pytesseract_module: Any) -> str:
+    return ocr_words_to_line_text(ocr_words_from_image(prepared_image, pytesseract_module))
 
 
 def extract_text_from_pdf(path: Path) -> tuple[str, str, list[str]]:
@@ -150,6 +188,8 @@ def extract_text_from_image(path: Path) -> tuple[str, str, list[str]]:
 
 FIELD_LABELS = {
     "payer_name": "PAYER’S name",
+    "payer_address": "PAYER address",
+    "payer_phone": "PAYER phone",
     "form": "Form",
     "account_number": "Account number (see instructions)",
 }
@@ -347,6 +387,8 @@ def extract_fields(text: str) -> dict[str, str | None]:
     lines = text.splitlines() if text else []
     return {
         FIELD_LABELS["payer_name"]: extract_payer_name(lines),
+        FIELD_LABELS["payer_address"]: None,
+        FIELD_LABELS["payer_phone"]: None,
         FIELD_LABELS["form"]: extract_form_value(text),
         FIELD_LABELS["account_number"]: extract_account_number(text, lines),
     }
@@ -461,6 +503,150 @@ def copy_with_suggested_name(info: DocumentInfo, output_dir: Path) -> DocumentIn
     return DocumentInfo(**{**asdict(info), "renamed_path": str(destination)})
 
 
+def word_bbox(words: list[OCRWord]) -> tuple[int, int, int, int]:
+    return (
+        min(word.left for word in words),
+        min(word.top for word in words),
+        max(word.right for word in words),
+        max(word.bottom for word in words),
+    )
+
+
+def grouped_ocr_lines(words: list[OCRWord]) -> list[tuple[str, tuple[int, int, int, int]]]:
+    grouped: dict[tuple[int, int, int, int], list[OCRWord]] = {}
+    for word in words:
+        key = (word.page_num, word.block_num, word.par_num, word.line_num)
+        grouped.setdefault(key, []).append(word)
+    lines = []
+    for line_words in grouped.values():
+        ordered = sorted(line_words, key=lambda word: word.left)
+        lines.append((" ".join(word.text for word in ordered), word_bbox(ordered)))
+    return sorted(lines, key=lambda line: (line[1][1], line[1][0]))
+
+
+def find_payer_anchor_bbox(words: list[OCRWord]) -> tuple[int, int, int, int] | None:
+    best: tuple[str, tuple[int, int, int, int]] | None = None
+    for line in grouped_ocr_lines(words):
+        text, bbox = line
+        if has_payer_name_anchor(text):
+            if best is None or (bbox[1], bbox[0]) < (best[1][1], best[1][0]):
+                best = line
+    return best[1] if best else None
+
+
+def dark_pixel(value: int) -> bool:
+    return value < 80
+
+
+def find_horizontal_boundary(image: Any, top: int, left: int, right: int) -> int:
+    grayscale = image.convert("L")
+    width, height = grayscale.size
+    left = max(0, min(left, width - 1))
+    right = max(left + 1, min(right, width))
+    pixels = grayscale.load()
+    for y in range(min(height - 1, top + 5), height):
+        dark_count = sum(1 for x in range(left, right) if dark_pixel(pixels[x, y]))
+        if dark_count / max(right - left, 1) >= 0.45:
+            return y
+    return height
+
+
+def find_vertical_boundaries(image: Any, anchor_bbox: tuple[int, int, int, int], bottom: int) -> tuple[int, int]:
+    grayscale = image.convert("L")
+    width, height = grayscale.size
+    anchor_left, anchor_top, anchor_right, _ = anchor_bbox
+    bottom = max(anchor_top + 1, min(bottom, height))
+    pixels = grayscale.load()
+
+    def is_vertical_line(x: int) -> bool:
+        dark_count = sum(1 for y in range(anchor_top, bottom) if dark_pixel(pixels[x, y]))
+        return dark_count / max(bottom - anchor_top, 1) >= 0.35
+
+    left = 0
+    for x in range(max(0, anchor_left), -1, -1):
+        if is_vertical_line(x):
+            left = x
+            break
+
+    right = width
+    for x in range(min(width - 1, anchor_right + 1), width):
+        if is_vertical_line(x):
+            right = x
+            break
+    return left, right
+
+
+def crop_payer_block_image(prepared_image: Any, words: list[OCRWord]) -> Any | None:
+    anchor_bbox = find_payer_anchor_bbox(words)
+    if not anchor_bbox:
+        return None
+    _, top, _, bottom = anchor_bbox
+    estimated_right = min(prepared_image.size[0], max(word.right for word in words if word.top >= top) + 10)
+    block_bottom = find_horizontal_boundary(prepared_image, bottom, 0, estimated_right)
+    block_left, block_right = find_vertical_boundaries(prepared_image, anchor_bbox, block_bottom)
+    padding = 2
+    return prepared_image.crop((
+        max(0, block_left + padding),
+        max(0, top),
+        min(prepared_image.size[0], block_right - padding),
+        min(prepared_image.size[1], block_bottom),
+    ))
+
+
+def payer_block_content_lines(block_text: str) -> list[str]:
+    result = []
+    for line in block_text.splitlines():
+        value = clean_field_value(strip_neighbor_fields(line))
+        if not value:
+            continue
+        if has_payer_name_anchor(value) or is_payer_header_fragment(value):
+            continue
+        if line_is_neighbor_field(value):
+            break
+        result.append(value)
+    return result
+
+
+def extract_payer_block_text_from_image(path: Path) -> str | None:
+    if not all(module_available(name) for name in ("PIL", "pytesseract")):
+        return None
+    from PIL import Image  # type: ignore
+    import pytesseract  # type: ignore
+    from PIL import ImageOps  # type: ignore
+
+    with Image.open(path) as image:
+        prepared = ImageOps.autocontrast(image.convert("L"))
+        prepared = prepared.resize((prepared.width * 2, prepared.height * 2))
+        words = ocr_words_from_image(prepared, pytesseract)
+        crop = crop_payer_block_image(prepared, words)
+        if crop is None:
+            return None
+        text = extract_line_ordered_ocr_text(crop, pytesseract)
+        if not text:
+            text = pytesseract.image_to_string(crop, config="--oem 3 --psm 6")
+    return normalize_text(text)
+
+
+def payer_block_fields(block_text: str | None) -> dict[str, str | None]:
+    lines = payer_block_content_lines(block_text or "")
+    phone_pattern = r"(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}"
+    phone = next((line for line in lines if re.search(phone_pattern, line)), None)
+    address_lines = [line for line in lines[1:] if line != phone]
+    return {
+        FIELD_LABELS["payer_name"]: clean_party_name(lines[0]) if lines else None,
+        FIELD_LABELS["payer_address"]: "\n".join(address_lines) if address_lines else None,
+        FIELD_LABELS["payer_phone"]: phone,
+    }
+
+
+def merge_preferred_fields(base_fields: dict[str, str | None], preferred_fields: dict[str, str | None]) -> dict[str, str | None]:
+    merged = dict(base_fields)
+    for key, value in preferred_fields.items():
+        if value:
+            merged[key] = value
+    return merged
+
+
 def extract_document_info(path: Path) -> DocumentInfo:
     resolved = path.expanduser().resolve()
     extension = resolved.suffix.lower()
@@ -478,6 +664,9 @@ def extract_document_info(path: Path) -> DocumentInfo:
         text, parser, warnings = extract_text_from_image(resolved)
 
     lines = text.splitlines() if text else []
+    fields = extract_fields(text)
+    if extension in IMAGE_EXTENSIONS:
+        fields = merge_preferred_fields(fields, payer_block_fields(extract_payer_block_text_from_image(resolved)))
     info = DocumentInfo(
         source_path=str(resolved),
         file_name=resolved.name,
@@ -488,7 +677,7 @@ def extract_document_info(path: Path) -> DocumentInfo:
         line_count=len(lines),
         character_count=len(text),
         warnings=warnings,
-        extracted_fields=extract_fields(text),
+        extracted_fields=fields,
         suggested_file_name=None,
     )
     return DocumentInfo(**{**asdict(info), "suggested_file_name": build_suggested_file_name(info)})
@@ -508,6 +697,8 @@ def info_to_text(info: DocumentInfo) -> str:
         f"Renamed path: {info.renamed_path or ''}\n\n"
         f"Columns:\n"
         f"PAYER’S name: {info.extracted_fields.get('PAYER’S name') or ''}\n"
+        f"PAYER address: {info.extracted_fields.get('PAYER address') or ''}\n"
+        f"PAYER phone: {info.extracted_fields.get('PAYER phone') or ''}\n"
         f"Form: {info.extracted_fields.get('Form') or ''}\n"
         f"Account number (see instructions): {info.extracted_fields.get('Account number (see instructions)') or ''}\n\n"
         f"Extracted text:\n{info.text}\n"

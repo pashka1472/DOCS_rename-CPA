@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from document_info_extractor import extract_document_info, extract_fields, extract_line_ordered_ocr_text, main, write_output
+from document_info_extractor import extract_document_info, extract_fields, extract_line_ordered_ocr_text, main, payer_block_fields, write_output
 
 
 def write_simple_pdf(path, text):
@@ -134,6 +134,8 @@ def test_json_output_includes_suggested_name_for_supplied_1099_nec(tmp_path):
     document = json.loads(output_path.read_text(encoding="utf-8"))["documents"][0]
     assert document["extracted_fields"] == {
         "PAYER’S name": "ABC Consulting LLC",
+        "PAYER address": None,
+        "PAYER phone": None,
         "Form": "1099-NEC",
         "Account number (see instructions)": "INV-2026-00421",
     }
@@ -330,3 +332,19 @@ def test_json_output_keeps_extracted_text_as_multiline_string(tmp_path):
     assert document["text"] == "Line one\nLine two\nLine three"
     assert document["text_lines"] == ["Line one", "Line two", "Line three"]
     assert document["line_count"] == 3
+
+
+def test_payer_block_fields_returns_name_address_and_phone_from_cropped_block():
+    block_text = """PAYER'S name, street address, city or town, state or province, country, ZIP
+or foreign postal code, and telephone no.
+SAMPLE BANK LLC
+123 Main St
+Newark, NJ 07102
+(555) 123-4567
+"""
+
+    assert payer_block_fields(block_text) == {
+        "PAYER’S name": "SAMPLE BANK LLC",
+        "PAYER address": "123 Main St\nNewark, NJ 07102",
+        "PAYER phone": "(555) 123-4567",
+    }
