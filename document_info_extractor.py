@@ -531,6 +531,13 @@ def unique_path(path: Path) -> Path:
     raise FileExistsError(f"Could not create a unique file name for {path}")
 
 
+def suggested_name_with_extension(info: DocumentInfo, extension: str) -> str | None:
+    if not info.suggested_file_name:
+        return None
+    suffix = extension if extension.startswith(".") else f".{extension}"
+    return f"{Path(info.suggested_file_name).stem}{suffix.lower()}"
+
+
 def copy_with_suggested_name(info: DocumentInfo, output_dir: Path) -> DocumentInfo:
     if not info.suggested_file_name:
         return info
@@ -538,6 +545,27 @@ def copy_with_suggested_name(info: DocumentInfo, output_dir: Path) -> DocumentIn
     destination = unique_path(output_dir / info.suggested_file_name)
     shutil.copy2(info.source_path, destination)
     return DocumentInfo(**{**asdict(info), "renamed_path": str(destination)})
+
+
+def copy_as_pdf_with_suggested_name(info: DocumentInfo, output_dir: Path) -> DocumentInfo:
+    pdf_name = suggested_name_with_extension(info, PDF_EXTENSION)
+    if not pdf_name:
+        return info
+    output_dir.mkdir(parents=True, exist_ok=True)
+    destination = unique_path(output_dir / pdf_name)
+    source = Path(info.source_path)
+    if source.suffix.lower() == PDF_EXTENSION:
+        shutil.copy2(source, destination)
+    elif source.suffix.lower() in IMAGE_EXTENSIONS:
+        if not module_available("PIL"):
+            raise RuntimeError("Converting images to PDF requires Pillow. Install dependencies with: python -m pip install -r requirements.txt")
+        from PIL import Image  # type: ignore
+
+        with Image.open(source) as image:
+            image.convert("RGB").save(destination, "PDF")
+    else:
+        raise ValueError(f"Cannot create PDF output from unsupported extension: {source.suffix}")
+    return DocumentInfo(**{**asdict(info), "suggested_file_name": pdf_name, "renamed_path": str(destination)})
 
 
 def word_bbox(words: list[OCRWord]) -> tuple[int, int, int, int]:

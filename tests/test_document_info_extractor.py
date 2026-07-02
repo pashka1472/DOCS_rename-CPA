@@ -2,7 +2,9 @@ import json
 
 import pytest
 
-from document_info_extractor import account_block_fields, extract_document_info, extract_fields, extract_line_ordered_ocr_text, form_block_fields, k1_form_block_fields, lender_block_fields, main, partnership_block_fields, partnership_ein_block_fields, payer_block_fields, write_output
+from install_desktop_shortcut import APP_NAME, LAUNCHER_NAME, default_python_executable, launcher_contents, powershell_shortcut_script
+
+from document_info_extractor import account_block_fields, copy_as_pdf_with_suggested_name, extract_document_info, extract_fields, extract_line_ordered_ocr_text, form_block_fields, k1_form_block_fields, lender_block_fields, main, partnership_block_fields, partnership_ein_block_fields, payer_block_fields, suggested_name_with_extension, write_output
 
 
 def write_simple_pdf(path, text):
@@ -30,6 +32,31 @@ def write_simple_pdf(path, text):
     pdf.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("ascii"))
     path.write_bytes(bytes(pdf))
 
+
+
+def test_windows_shortcut_launcher_uses_python_and_gui_paths(tmp_path):
+    python_path = tmp_path / "pythonw.exe"
+    app_path = tmp_path / "windows_app.py"
+
+    contents = launcher_contents(python_path, app_path)
+
+    assert f'cd /d "{tmp_path}"' in contents
+    assert f'start "" "{python_path}" "{app_path}"' in contents
+
+
+def test_windows_shortcut_defaults_to_current_python_when_pythonw_is_missing():
+    assert default_python_executable().name in {"python", "python.exe", "pythonw.exe"}
+
+
+def test_windows_shortcut_powershell_points_to_launcher(tmp_path):
+    shortcut_path = tmp_path / f"{APP_NAME}.lnk"
+    launcher_path = tmp_path / LAUNCHER_NAME
+
+    script = powershell_shortcut_script(shortcut_path, launcher_path, tmp_path)
+
+    assert str(shortcut_path) in script
+    assert str(launcher_path) in script
+    assert "CreateShortcut" in script
 
 def test_extracts_text_from_simple_pdf(tmp_path):
     pdf_path = tmp_path / "sample.pdf"
@@ -165,6 +192,29 @@ def test_suggests_requested_tax_document_names(tmp_path):
         write_simple_pdf(pdf_path, text)
         assert extract_document_info(pdf_path).suggested_file_name == expected
 
+
+
+def test_suggested_name_with_extension_forces_pdf(tmp_path):
+    pdf_path = tmp_path / "nec.pdf"
+    write_simple_pdf(pdf_path, "Form 1099-NEC\nPAYER'S name\nABC Consulting LLC")
+    info = extract_document_info(pdf_path)
+
+    assert suggested_name_with_extension(info, ".pdf") == "1099_NEC_ABC_Consulting_LLC.pdf"
+
+
+def test_copy_as_pdf_with_suggested_name_copies_pdf_to_pdf_name(tmp_path):
+    pdf_path = tmp_path / "nec.pdf"
+    output_dir = tmp_path / "renamed"
+    write_simple_pdf(pdf_path, "Form 1099-NEC\nPAYER'S name\nABC Consulting LLC")
+    info = extract_document_info(pdf_path)
+
+    copied = copy_as_pdf_with_suggested_name(info, output_dir)
+
+    destination = output_dir / "1099_NEC_ABC_Consulting_LLC.pdf"
+    assert destination.exists()
+    assert copied.suggested_file_name == destination.name
+    assert copied.renamed_path == str(destination)
+    assert destination.read_bytes() == pdf_path.read_bytes()
 
 def test_rename_dir_copies_file_with_suggested_name(tmp_path):
     pdf_path = tmp_path / "nec.pdf"

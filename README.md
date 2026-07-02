@@ -1,6 +1,6 @@
 # Document information extractor
 
-Small CLI app that extracts text from documents and creates an information file.
+Small CLI app and Windows-friendly desktop GUI that extract text from tax documents, suggest CPA file names, and copy renamed documents.
 
 ## Supported input formats
 
@@ -9,7 +9,7 @@ Small CLI app that extracts text from documents and creates an information file.
 
 ## Output
 
-The app writes one output file with information for each document:
+The CLI writes one output file with information for each document:
 
 - source path
 - file name
@@ -77,7 +77,36 @@ The app uses those fields to suggest CPA file names. When an account number is p
 
 For your sample `nec.png`, the output should include `suggested_file_name`: `1099_NEC_ABC Consulting LLC_0421.png`.
 
-Use `--rename-dir` to copy files into a folder with the suggested names. Original files are not deleted or overwritten.
+Use `--rename-dir` to copy files into a folder with the suggested names. Original files are not deleted or overwritten. The desktop app uses the same extraction logic but copies the result as a renamed PDF.
+
+
+## Windows desktop app
+
+Use `windows_app.py` when you want a small desktop program instead of the command line. The workflow is:
+
+1. Install dependencies with `python -m pip install -r requirements.txt`.
+2. Install Tesseract OCR separately and make sure `tesseract.exe` is on `PATH`.
+3. Start the app:
+
+```bash
+python windows_app.py
+```
+
+To make it a regular desktop icon on Windows, run this once from the repository folder:
+
+```bash
+python install_desktop_shortcut.py
+```
+
+This creates a **Tax Document PDF Renamer** shortcut on your Desktop. After that, open the app by double-clicking the desktop icon.
+
+In the window:
+
+1. Click **Select file...** and choose a PDF/image tax document.
+2. Click **Choose folder...** and select where renamed files should be written.
+3. Click **Copy as renamed PDF**.
+
+The app does not delete or rename the original file. It copies the document into the output folder using the extracted tax-document name, and the copied output is always a `.pdf` file. If the input is already PDF, it is copied as PDF. If the input is an image, Pillow converts the image to PDF after OCR builds the suggested name. The app also writes `document_info.json` in the output folder with the extracted fields and output path.
 
 ## Usage
 
