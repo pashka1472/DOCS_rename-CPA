@@ -92,6 +92,14 @@ Use `windows_app.py` when you want a small desktop program instead of the comman
 python windows_app.py
 ```
 
+To make it a regular desktop icon on Windows, run this once from the repository folder:
+
+```bash
+python install_desktop_shortcut.py
+```
+
+This creates a **Tax Document PDF Renamer** shortcut on your Desktop. After that, open the app by double-clicking the desktop icon.
+
 In the window:
 
 1. Click **Select file...** and choose a PDF/image tax document.
